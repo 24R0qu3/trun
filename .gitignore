@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.o
+*.a
+*.so
+*.log
+gdb_all_tests_log.txt
+.vscode/
+.idea/
+.claude/
+.hive/
+uv.lock

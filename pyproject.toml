@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trun"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "rich>=13.0.0",
+    "platformdirs>=4.0.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio", "ruff"]
+dev = ["bump-my-version", "ruff"]
+build = ["pyinstaller"]
+
+[project.scripts]
+trun = "trun.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trun"]
+
+[tool.bumpversion]
+current_version = "0.1.0"
+commit = true
+tag = true
+tag_name = "v{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "src/trun/__init__.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
