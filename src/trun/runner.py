@@ -49,7 +49,7 @@ async def _run_single(
             round_num=round_num,
         )
 
-    cmd = executor.build_command(binary)
+    cmd = executor.build_command(binary, entry.test_cases or None)
     t_start = time.monotonic()
 
     try:
@@ -90,19 +90,22 @@ async def _run_single(
     elapsed = int(time.monotonic() - t_start)
     output = stdout.decode(errors="replace") if stdout else ""
 
+    tc_info = f" [{', '.join(entry.test_cases)}]" if entry.test_cases else ""
     if timed_out:
         status = "TIMEOUT"
         log_line = (
-            f"=== [round {round_num}] {entry.name}: TIMEOUT "
+            f"=== [round {round_num}] {entry.name}{tc_info}: TIMEOUT "
             f"({fmt_duration(elapsed)}, limit {fmt_duration(timeout)}) ===\n"
         )
     elif exit_code == 0:
         status = "PASS"
-        log_line = f"=== [round {round_num}] {entry.name}: PASS ({fmt_duration(elapsed)}) ===\n"
+        log_line = (
+            f"=== [round {round_num}] {entry.name}{tc_info}: PASS ({fmt_duration(elapsed)}) ===\n"
+        )
     else:
         status = "FAIL"
         log_line = (
-            f"=== [round {round_num}] {entry.name}: FAIL "
+            f"=== [round {round_num}] {entry.name}{tc_info}: FAIL "
             f"(exit {exit_code}, {fmt_duration(elapsed)}) ===\n"
         )
 

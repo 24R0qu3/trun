@@ -7,8 +7,20 @@ the terminal, and expose everything as MCP tools so an AI can drive debugging au
 ## Installation
 
 ```bash
+pipx install git+ssh://git@github.com/24R0qu3/trun.git
+```
+
+Or from a local clone:
+
+```bash
 git clone git@github.com:24R0qu3/trun.git
 cd trun
+pipx install .
+```
+
+For development (editable install):
+
+```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[test]"
 ```

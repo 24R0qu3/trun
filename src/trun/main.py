@@ -19,6 +19,8 @@ from .playlist import (
     _data_list_playlists,
     _data_load_builtin,
     _data_load_playlist_file,
+    _data_migrate_all_playlists,
+    _data_migrate_playlist,
     _data_remove_tests,
 )
 from .runner import _data_run_tests, fmt_duration
@@ -42,14 +44,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     if args.playlist:
         path = Path(args.playlist)
         if not path.exists():
-            named = PLAYLISTS_DIR / f"{args.playlist}.ini"
-            if named.exists():
-                path = named
-            else:
+            named = PLAYLISTS_DIR / f"{args.playlist}.yaml"
+            if not named.exists():
+                ini_fallback = PLAYLISTS_DIR / f"{args.playlist}.ini"
+                if ini_fallback.exists():
+                    _fail(
+                        f"Playlist '{args.playlist}' is still in .ini format. "
+                        f"Run: trun playlist migrate {args.playlist}"
+                    )
                 _fail(
                     f"Playlist '{args.playlist}' not found "
                     "(tried as file path and as named playlist)"
                 )
+            path = named
         try:
             entries = _data_load_playlist_file(str(path))
         except Exception as e:
@@ -150,10 +157,11 @@ def cmd_playlist_show(args: argparse.Namespace) -> None:
     if not entries:
         console.print(f"[dim]Playlist '{args.name}' is empty.[/dim]")
         return
-    t = Table("Group", "Subdir", "Executor", "Timeout", "Test")
+    t = Table("Group", "Subdir", "Executor", "Timeout", "Test", "Test Cases")
     for e in entries:
         to = f"{e['timeout']}s" if e["timeout"] is not None else "[dim]default[/dim]"
-        t.add_row(e["group"], e["subdir"], e["executor"], to, e["name"])
+        tc = ", ".join(e["test_cases"]) if e.get("test_cases") else "[dim]all[/dim]"
+        t.add_row(e["group"], e["subdir"], e["executor"], to, e["name"], tc)
     console.print(t)
 
 
@@ -165,12 +173,14 @@ def cmd_playlist_create(args: argparse.Namespace) -> None:
 
 
 def cmd_playlist_add(args: argparse.Namespace) -> None:
+    tc = args.test_cases or []
+    tests_dicts = [{"name": t, **({"test_cases": tc} if tc else {})} for t in args.tests]
     result = _data_add_tests(
         name=args.name,
         group=args.group,
         build_dir=args.build,
         subdir=args.type,
-        tests=args.tests,
+        tests=tests_dicts,
         executor=args.executor,
         timeout_fast=args.timeout_fast,
         timeout_long=args.timeout_long,
@@ -192,6 +202,28 @@ def cmd_playlist_delete(args: argparse.Namespace) -> None:
     if "error" in result:
         _fail(result["error"])
     _ok(result["message"])
+
+
+def cmd_playlist_migrate(args: argparse.Namespace) -> None:
+    name = getattr(args, "name", None)
+    if name:
+        result = _data_migrate_playlist(name)
+        if "error" in result:
+            _fail(result["error"])
+        _ok(result["message"])
+    else:
+        result = _data_migrate_all_playlists()
+        any_error = False
+        for m in result["migrations"]:
+            if "error" in m:
+                console.print(f"[red]{m['name']}:[/red] {m['error']}")
+                any_error = True
+            else:
+                _ok(f"{m['name']}: {m['message']}")
+        if not result["migrations"]:
+            console.print("[dim]No .ini playlists found to migrate.[/dim]")
+        elif any_error:
+            raise SystemExit(1)
 
 
 # ── executors ─────────────────────────────────────────────────────────────────
@@ -265,7 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--playlist",
         metavar="NAME_OR_PATH",
-        help="Named playlist or path to .ini file. Omit to run the built-in suite.",
+        help="Named playlist or path to .yaml file. Omit to run the built-in suite.",
     )
     p.add_argument("--build", metavar="DIR", help="Build directory (built-in suite only).")
     p.add_argument(
@@ -283,7 +315,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("playlist", help="Manage test playlists.")
     pl_sub = pl.add_subparsers(
         dest="playlist_command",
-        metavar="<list|show|create|add|remove-tests|delete>",
+        metavar="<list|show|create|add|remove-tests|delete|migrate>",
     )
     pl_sub.required = True
 
@@ -329,6 +361,13 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SECS",
         help="Override long_running timeout (seconds).",
     )
+    p.add_argument(
+        "--test-cases",
+        type=lambda s: s.split(","),
+        default=None,
+        metavar="FUNC1[,FUNC2,...]",
+        help="Qt test function names to run, comma-separated (applied to all tests in this call).",
+    )
     p.add_argument("tests", nargs="+", help="Test names to add.")
     p.set_defaults(func=cmd_playlist_add)
 
@@ -341,6 +380,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p = pl_sub.add_parser("delete", help="Delete a playlist.")
     p.add_argument("name", help="Playlist name.")
     p.set_defaults(func=cmd_playlist_delete)
+
+    p = pl_sub.add_parser("migrate", help="Migrate .ini playlist(s) to YAML.")
+    p.add_argument(
+        "name",
+        nargs="?",
+        help="Playlist name to migrate. Omit to migrate all .ini playlists.",
+    )
+    p.set_defaults(func=cmd_playlist_migrate)
 
     pl.set_defaults(func=lambda args: pl.print_help())
 

@@ -9,6 +9,7 @@ class TestEntry:
     group: str
     executor: str = "gdb"   # per-section executor; overridable at run time
     timeout: int | None = None  # explicit override; None → use executor default for subdir
+    test_cases: list[str] = field(default_factory=list)  # empty = run all
 
 
 @dataclass

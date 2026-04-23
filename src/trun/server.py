@@ -19,6 +19,8 @@ from .playlist import (
     _data_list_playlists,
     _data_load_builtin,
     _data_load_playlist_file,
+    _data_migrate_all_playlists,
+    _data_migrate_playlist,
     _data_remove_tests,
 )
 from .runner import _data_run_tests
@@ -41,8 +43,8 @@ _TOOLS = [
                 "playlist": {
                     "type": "string",
                     "description": (
-                    "Named playlist or path to .ini file. Omit to run built-in suite."
-                ),
+                        "Named playlist or path to .yaml file. Omit to run built-in suite."
+                    ),
                 },
                 "build_dir": {
                     "type": "string",
@@ -81,7 +83,7 @@ _TOOLS = [
         name="get_playlist",
         description=(
             "Get the full contents of a named playlist "
-            "including per-test executor and timeout settings."
+            "including per-test executor, timeout, and test_cases settings."
         ),
         inputSchema={
             "type": "object",
@@ -115,8 +117,24 @@ _TOOLS = [
                 },
                 "tests": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Test binary names to add.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Test binary name.",
+                            },
+                            "test_cases": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Qt test function names to run. Omit to run all."
+                                ),
+                            },
+                        },
+                        "required": ["name"],
+                    },
+                    "description": "Tests to add. Each entry is {name, test_cases?}.",
                 },
                 "executor": {
                     "type": "string",
@@ -186,6 +204,23 @@ _TOOLS = [
         ),
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
+    Tool(
+        name="migrate_playlist",
+        description=(
+            "Migrate a single .ini playlist to YAML format and delete the .ini file. "
+            "Use migrate_all_playlists to migrate all at once."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Playlist name."}},
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="migrate_all_playlists",
+        description="Migrate all .ini playlists to YAML format, deleting the old .ini files.",
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
 ]
 
 
@@ -203,12 +238,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if playlist:
                     path = Path(playlist)
                     if not path.exists():
-                        named = PLAYLISTS_DIR / f"{playlist}.ini"
-                        if named.exists():
-                            path = named
-                        else:
-                            result: dict = {"error": f"Playlist '{playlist}' not found"}
+                        named = PLAYLISTS_DIR / f"{playlist}.yaml"
+                        if not named.exists():
+                            ini_fallback = PLAYLISTS_DIR / f"{playlist}.ini"
+                            if ini_fallback.exists():
+                                result: dict = {
+                                    "error": (
+                                        f"Playlist '{playlist}' is still in .ini format. "
+                                        f"Use migrate_playlist to convert it first."
+                                    )
+                                }
+                            else:
+                                result = {"error": f"Playlist '{playlist}' not found"}
                             return [TextContent(type="text", text=json.dumps(result))]
+                        path = named
                     entries = await asyncio.to_thread(_data_load_playlist_file, str(path))
                 else:
                     build_dir = arguments.get("build_dir", DEFAULT_BUILD)
@@ -259,6 +302,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     result = {"lines": [], "total_lines": 0, "path": str(LOG_FILE)}
             case "list_executors":
                 result = list_executors()
+            case "migrate_playlist":
+                result = await asyncio.to_thread(_data_migrate_playlist, arguments["name"])
+            case "migrate_all_playlists":
+                result = await asyncio.to_thread(_data_migrate_all_playlists)
             case _:
                 result = {"error": f"Unknown tool: {name}"}
     except Exception as e:

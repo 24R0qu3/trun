@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from .config import DEFAULT_BUILD, PLAYLISTS_DIR
 from .models import TestEntry
 
@@ -55,7 +57,8 @@ def _data_load_builtin(build_dir: str = DEFAULT_BUILD) -> list[TestEntry]:
     return entries
 
 
-def _data_load_playlist_file(path: str) -> list[TestEntry]:
+def _data_load_playlist_file_ini(path: str) -> list[TestEntry]:
+    """Load a legacy .ini playlist. Used only for migration."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Playlist file not found: {path}")
@@ -113,16 +116,45 @@ def _data_load_playlist_file(path: str) -> list[TestEntry]:
     return entries
 
 
+def _data_load_playlist_file(path: str) -> list[TestEntry]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Playlist file not found: {path}")
+    data = yaml.safe_load(p.read_text()) or {}
+    entries: list[TestEntry] = []
+    for group in data.get("groups", []):
+        group_name = group["name"]
+        build = group["build"]
+        executor = group.get("executor", "gdb")
+        timeout_fast = group.get("timeout_fast")
+        timeout_long = group.get("timeout_long")
+        for test in group.get("tests", []):
+            subdir = test["subdir"]
+            timeout = timeout_fast if subdir == "fast_running" else timeout_long
+            entries.append(
+                TestEntry(
+                    name=test["name"],
+                    subdir=subdir,
+                    build_dir=build,
+                    group=group_name,
+                    executor=executor,
+                    timeout=timeout,
+                    test_cases=test.get("test_cases", []),
+                )
+            )
+    return entries
+
+
 def _data_list_playlists() -> list[dict]:
     PLAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
     return [
-        {"name": p.stem, "path": str(p)} for p in sorted(PLAYLISTS_DIR.glob("*.ini"))
+        {"name": p.stem, "path": str(p)} for p in sorted(PLAYLISTS_DIR.glob("*.yaml"))
     ]
 
 
 def _resolve_playlist_path(name: str) -> Path:
     PLAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
-    return PLAYLISTS_DIR / f"{name}.ini"
+    return PLAYLISTS_DIR / f"{name}.yaml"
 
 
 def _data_get_playlist(name: str) -> dict:
@@ -144,6 +176,7 @@ def _data_get_playlist(name: str) -> dict:
                 "group": e.group,
                 "executor": e.executor,
                 "timeout": e.timeout,
+                "test_cases": e.test_cases,
             }
             for e in entries
         ],
@@ -154,7 +187,7 @@ def _data_create_playlist(name: str) -> dict:
     path = _resolve_playlist_path(name)
     if path.exists():
         return {"error": f"Playlist '{name}' already exists"}
-    path.write_text("")
+    path.write_text(yaml.dump({"groups": []}, default_flow_style=False))
     return {"message": f"Created playlist '{name}'", "path": str(path)}
 
 
@@ -163,7 +196,7 @@ def _data_add_tests(
     group: str,
     build_dir: str,
     subdir: str,
-    tests: list[str],
+    tests: list[dict],
     executor: str = "gdb",
     timeout_fast: int | None = None,
     timeout_long: int | None = None,
@@ -177,46 +210,35 @@ def _data_add_tests(
             )
         }
 
-    existing = path.read_text()
-    section_header = f"[{group}]"
+    data = yaml.safe_load(path.read_text()) or {"groups": []}
+    groups = data.setdefault("groups", [])
 
-    if section_header in existing:
-        lines = existing.splitlines()
-        new_lines: list[str] = []
-        in_section = False
-        subdir_found = False
-
-        for line in lines:
-            stripped = line.strip()
-            if stripped == section_header:
-                in_section = True
-            elif stripped.startswith("[") and stripped.endswith("]") and in_section:
-                if not subdir_found:
-                    new_lines.append(f"{subdir} = {' '.join(tests)}")
-                in_section = False
-                subdir_found = False
-
-            if in_section and stripped.startswith(f"{subdir} ="):
-                existing_tests = stripped[len(subdir) + 2 :].strip()
-                line = f"{subdir} = {existing_tests} {' '.join(tests)}"
-                subdir_found = True
-
-            new_lines.append(line)
-
-        if in_section and not subdir_found:
-            new_lines.append(f"{subdir} = {' '.join(tests)}")
-
-        path.write_text("\n".join(new_lines) + "\n")
-    else:
-        section_lines = [f"\n[{group}]", f"build = {build_dir}", f"executor = {executor}"]
+    grp = next((g for g in groups if g["name"] == group), None)
+    if grp is None:
+        grp = {"name": group, "build": build_dir, "executor": executor, "tests": []}
         if timeout_fast is not None:
-            section_lines.append(f"timeout_fast = {timeout_fast}")
+            grp["timeout_fast"] = timeout_fast
         if timeout_long is not None:
-            section_lines.append(f"timeout_long = {timeout_long}")
-        section_lines.append(f"{subdir} = {' '.join(tests)}")
-        path.write_text(existing.rstrip() + "\n" + "\n".join(section_lines) + "\n")
+            grp["timeout_long"] = timeout_long
+        groups.append(grp)
 
-    return {"message": f"Added {len(tests)} test(s) to '{name}' [{group}]"}
+    existing = {t["name"]: t for t in grp["tests"]}
+    added = 0
+    for t in tests:
+        t_name = t["name"] if isinstance(t, dict) else t
+        t_cases = (t.get("test_cases") or []) if isinstance(t, dict) else []
+        if t_name not in existing:
+            entry: dict = {"name": t_name, "subdir": subdir}
+            if t_cases:
+                entry["test_cases"] = t_cases
+            grp["tests"].append(entry)
+            existing[t_name] = entry
+            added += 1
+        elif t_cases:
+            existing[t_name]["test_cases"] = t_cases
+
+    path.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+    return {"message": f"Added {added} test(s) to '{name}' [{group}]"}
 
 
 def _data_remove_tests(name: str, group: str, tests: list[str]) -> dict:
@@ -225,27 +247,12 @@ def _data_remove_tests(name: str, group: str, tests: list[str]) -> dict:
         return {"error": f"Playlist '{name}' not found"}
 
     to_remove = set(tests)
-    lines = path.read_text().splitlines()
-    new_lines: list[str] = []
-    current_section: str | None = None
+    data = yaml.safe_load(path.read_text()) or {"groups": []}
+    for grp in data.get("groups", []):
+        if grp["name"] == group:
+            grp["tests"] = [t for t in grp.get("tests", []) if t["name"] not in to_remove]
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current_section = stripped[1:-1].strip()
-
-        if current_section == group and "=" in stripped:
-            key, _, val = stripped.partition("=")
-            key = key.strip()
-            if key not in ("build", "executor", "timeout_fast", "timeout_long"):
-                remaining = [t for t in val.strip().split() if t not in to_remove]
-                if remaining:
-                    new_lines.append(f"{key} = {' '.join(remaining)}")
-                continue
-
-        new_lines.append(line)
-
-    path.write_text("\n".join(new_lines) + "\n")
+    path.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True))
     return {"message": f"Removed tests from '{name}' [{group}]"}
 
 
@@ -255,3 +262,48 @@ def _data_delete_playlist(name: str) -> dict:
         return {"error": f"Playlist '{name}' not found"}
     path.unlink()
     return {"message": f"Deleted playlist '{name}'"}
+
+
+def _data_migrate_playlist(name: str) -> dict:
+    """Convert a single .ini playlist to .yaml and delete the .ini."""
+    ini_path = PLAYLISTS_DIR / f"{name}.ini"
+    yaml_path = PLAYLISTS_DIR / f"{name}.yaml"
+    if not ini_path.exists():
+        return {"error": f"No .ini file found for playlist '{name}'"}
+    if yaml_path.exists():
+        return {"error": f"'{name}.yaml' already exists — delete it first"}
+
+    entries = _data_load_playlist_file_ini(str(ini_path))
+    groups_map: dict[str, dict] = {}
+    for e in entries:
+        if e.group not in groups_map:
+            groups_map[e.group] = {
+                "name": e.group,
+                "build": e.build_dir,
+                "executor": e.executor,
+                "tests": [],
+            }
+        grp = groups_map[e.group]
+        if e.timeout is not None:
+            key = "timeout_fast" if e.subdir == "fast_running" else "timeout_long"
+            grp[key] = e.timeout
+        grp["tests"].append({"name": e.name, "subdir": e.subdir})
+
+    yaml_path.write_text(
+        yaml.dump(
+            {"groups": list(groups_map.values())},
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+    )
+    ini_path.unlink()
+    return {"message": f"Migrated '{name}' → {yaml_path}", "path": str(yaml_path)}
+
+
+def _data_migrate_all_playlists() -> dict:
+    PLAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
+    results = [
+        {"name": p.stem, **_data_migrate_playlist(p.stem)}
+        for p in sorted(PLAYLISTS_DIR.glob("*.ini"))
+    ]
+    return {"migrations": results}

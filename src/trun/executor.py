@@ -9,7 +9,7 @@ class Executor:
     description: str
     timeouts: dict[str, int] = field(default_factory=dict)
 
-    def build_command(self, binary: str) -> list[str]:
+    def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
         raise NotImplementedError
 
     def default_timeout(self, subdir: str) -> int:
@@ -24,8 +24,11 @@ class GDBExecutor(Executor):
             timeouts={"fast_running": 60, "long_running": 180, "default": 180},
         )
 
-    def build_command(self, binary: str) -> list[str]:
-        return ["gdb", "-batch", "-ex", "run", "-ex", "bt", "-ex", "quit", binary]
+    def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
+        base = ["gdb", "-batch", "-ex", "run", "-ex", "bt", "-ex", "quit"]
+        if test_cases:
+            return base + ["--args", binary, *test_cases]
+        return base + [binary]
 
 
 class DirectExecutor(Executor):
@@ -36,8 +39,8 @@ class DirectExecutor(Executor):
             timeouts={"fast_running": 60, "long_running": 180, "default": 180},
         )
 
-    def build_command(self, binary: str) -> list[str]:
-        return [binary]
+    def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
+        return [binary, *test_cases] if test_cases else [binary]
 
 
 class ValgrindExecutor(Executor):
@@ -48,8 +51,9 @@ class ValgrindExecutor(Executor):
             timeouts={"fast_running": 120, "long_running": 360, "default": 360},
         )
 
-    def build_command(self, binary: str) -> list[str]:
-        return ["valgrind", "--leak-check=full", "--error-exitcode=1", binary]
+    def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
+        base = ["valgrind", "--leak-check=full", "--error-exitcode=1", binary]
+        return base + list(test_cases) if test_cases else base
 
 
 class PytestExecutor(Executor):
@@ -60,7 +64,7 @@ class PytestExecutor(Executor):
             timeouts={"fast_running": 60, "long_running": 180, "default": 180},
         )
 
-    def build_command(self, binary: str) -> list[str]:
+    def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
         return ["pytest", binary, "-v"]
 
 
