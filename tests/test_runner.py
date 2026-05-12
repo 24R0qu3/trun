@@ -1,3 +1,8 @@
+import asyncio
+import shutil
+import subprocess
+import sys
+
 import pytest
 
 from trun.executor import get_executor, list_executors
@@ -129,3 +134,215 @@ async def test_run_tests_repeat(tmp_path):
     result = await _data_run_tests(entries, repeat=3, log_file=log)
     assert len(result["results"]) == 3
     assert all(r["round"] in (1, 2, 3) for r in result["results"])
+
+
+# ── PASS / FAIL / TIMEOUT / INTR ──────────────────────────────────────────────
+# Use the pytest executor so we can point at a real Python script as the binary.
+
+
+def _make_pytest_file(tmp_path, body: str) -> str:
+    """Write a pytest test file and return its path as a string."""
+    script = tmp_path / "test_script.py"
+    script.write_text(body)
+    return str(script)
+
+
+def _pytest_entry(binary: str, group: str = "g", timeout: int | None = None) -> TestEntry:
+    return TestEntry(
+        name=binary,
+        subdir="fast_running",
+        build_dir=None,
+        group=group,
+        executor="pytest",
+        timeout=timeout,
+    )
+
+
+async def test_run_tests_pass(tmp_path):
+    binary = _make_pytest_file(tmp_path, "def test_it(): pass\n")
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([_pytest_entry(binary)], log_file=log)
+    assert result["passed"] == 1
+    assert result["failed"] == 0
+    assert result["skipped"] == 0
+    assert result["results"][0]["status"] == "PASS"
+
+
+async def test_run_tests_fail(tmp_path):
+    binary = _make_pytest_file(tmp_path, "def test_it(): assert False\n")
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([_pytest_entry(binary)], log_file=log)
+    assert result["failed"] == 1
+    assert result["passed"] == 0
+    assert result["skipped"] == 0
+    assert result["results"][0]["status"] == "FAIL"
+
+
+async def test_run_tests_timeout(tmp_path):
+    binary = _make_pytest_file(tmp_path, "import time\ndef test_it(): time.sleep(60)\n")
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([_pytest_entry(binary, timeout=1)], log_file=log)
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "TIMEOUT"
+
+
+async def test_run_tests_intr(tmp_path):
+    binary = _make_pytest_file(tmp_path, "import time\ndef test_it(): time.sleep(60)\n")
+    log = tmp_path / "test.log"
+    result = await _cancel_after(0.1, _data_run_tests([_pytest_entry(binary)], log_file=log))
+    assert result is None
+    assert "INTR" in log.read_text()
+
+
+# ── direct / gdb shared helpers ───────────────────────────────────────────────
+
+
+async def _cancel_after(delay: float, coro):
+    """Run coro, cancel it after delay seconds; return None if cancelled."""
+    task = asyncio.create_task(coro)
+    await asyncio.sleep(delay)
+    task.cancel()
+    try:
+        return await task
+    except asyncio.CancelledError:
+        return None
+
+
+def _make_binary_entry(
+    tmp_path,
+    code: str,
+    executor: str,
+    name: str = "my_test",
+    timeout: int | None = None,
+) -> TestEntry:
+    """Create the build-dir tree non-pytest executors expect and return a TestEntry."""
+    build_dir = tmp_path / "build"
+    binary_path = build_dir / "test" / "fast_running" / name / name
+    binary_path.parent.mkdir(parents=True)
+    binary_path.write_text(f"#!/usr/bin/env python3\n{code}")
+    binary_path.chmod(0o755)
+    return TestEntry(
+        name=name,
+        subdir="fast_running",
+        build_dir=str(build_dir),
+        group="g",
+        executor=executor,
+        timeout=timeout,
+    )
+
+
+gdb_and_gcc = pytest.mark.skipif(
+    shutil.which("gdb") is None or shutil.which("gcc") is None,
+    reason="gdb and gcc required",
+)
+
+
+# ── direct executor ───────────────────────────────────────────────────────────
+
+
+async def test_direct_pass(tmp_path):
+    entry = _make_binary_entry(tmp_path, "import sys; sys.exit(0)\n", "direct")
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["passed"] == 1
+    assert result["failed"] == 0
+    assert result["results"][0]["status"] == "PASS"
+
+
+async def test_direct_fail(tmp_path):
+    entry = _make_binary_entry(tmp_path, "import sys; sys.exit(1)\n", "direct")
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["failed"] == 1
+    assert result["passed"] == 0
+    assert result["results"][0]["status"] == "FAIL"
+
+
+async def test_direct_timeout(tmp_path):
+    entry = _make_binary_entry(tmp_path, "import time; time.sleep(60)\n", "direct", timeout=1)
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "TIMEOUT"
+
+
+async def test_direct_intr(tmp_path):
+    entry = _make_binary_entry(tmp_path, "import time; time.sleep(60)\n", "direct")
+    log = tmp_path / "test.log"
+    result = await _cancel_after(0.1, _data_run_tests([entry], log_file=log))
+    assert result is None
+    assert "INTR" in log.read_text()
+
+
+# ── gdb executor ──────────────────────────────────────────────────────────────
+# gdb is designed for ELF binaries. Script inferiors don't get properly traced,
+# so we compile small C programs inline. gdb exits non-zero only when the
+# inferior is killed by a signal (abort/crash), not on a clean non-zero exit.
+
+
+def _compile_gdb_entry(
+    tmp_path, c_code: str, name: str = "my_test", timeout: int | None = None
+) -> TestEntry:
+    build_dir = tmp_path / "build"
+    binary_dir = build_dir / "test" / "fast_running" / name
+    binary_dir.mkdir(parents=True)
+    binary_path = binary_dir / name
+    src = tmp_path / f"{name}.c"
+    src.write_text(c_code)
+    subprocess.check_call(["gcc", "-o", str(binary_path), str(src)], stderr=subprocess.DEVNULL)
+    return TestEntry(
+        name=name,
+        subdir="fast_running",
+        build_dir=str(build_dir),
+        group="g",
+        executor="gdb",
+        timeout=timeout,
+    )
+
+
+@gdb_and_gcc
+async def test_gdb_pass(tmp_path):
+    entry = _compile_gdb_entry(tmp_path, "int main(void) { return 0; }\n")
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["passed"] == 1
+    assert result["results"][0]["status"] == "PASS"
+
+
+@gdb_and_gcc
+@pytest.mark.skip(
+    reason=(
+        "gdb -batch exits 0 regardless of inferior exit/signal; "
+        "crash detection requires --return-child-result or output parsing"
+    )
+)
+async def test_gdb_fail(tmp_path):
+    entry = _compile_gdb_entry(tmp_path, "#include <stdlib.h>\nint main(void) { abort(); }\n")
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "FAIL"
+
+
+@gdb_and_gcc
+async def test_gdb_timeout(tmp_path):
+    entry = _compile_gdb_entry(
+        tmp_path,
+        "#include <unistd.h>\nint main(void) { while(1) sleep(1); }\n",
+        timeout=1,
+    )
+    log = tmp_path / "test.log"
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "TIMEOUT"
+
+
+@gdb_and_gcc
+async def test_gdb_intr(tmp_path):
+    entry = _compile_gdb_entry(
+        tmp_path, "#include <unistd.h>\nint main(void) { while(1) sleep(1); }\n"
+    )
+    log = tmp_path / "test.log"
+    result = await _cancel_after(0.5, _data_run_tests([entry], log_file=log))
+    assert result is None
+    assert "INTR" in log.read_text()

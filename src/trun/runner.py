@@ -71,6 +71,21 @@ async def _run_single(
             stdout = b""
             exit_code = 124
             timed_out = True
+        except asyncio.CancelledError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            elapsed = int(time.monotonic() - t_start)
+            tc_info = f" [{', '.join(entry.test_cases)}]" if entry.test_cases else ""
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            with log_file.open("a") as f:
+                f.write(
+                    f"=== [round {round_num}] {entry.name}{tc_info}: INTR "
+                    f"({fmt_duration(elapsed)}) ===\n\n"
+                )
+            raise
     except Exception as e:
         elapsed = int(time.monotonic() - t_start)
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +164,21 @@ async def _data_run_tests(
             random.shuffle(round_entries)
 
         for entry in round_entries:
-            result = await _run_single(entry, round_num, executor_override, log_file)
+            try:
+                result = await _run_single(entry, round_num, executor_override, log_file)
+            except asyncio.CancelledError:
+                result = TestResult(
+                    name=entry.name,
+                    group=entry.group,
+                    status="INTR",
+                    duration_secs=None,
+                    round_num=round_num,
+                )
+                run_result.results.append(result)
+                run_result.skipped += 1
+                if on_result:
+                    on_result(result)
+                raise
             run_result.results.append(result)
             if result.status == "PASS":
                 run_result.passed += 1

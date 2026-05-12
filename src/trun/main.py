@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 from rich.console import Console
@@ -75,7 +76,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     console.print(f"[bold]Log    :[/bold] {LOG_FILE}")
     console.print()
 
+    results_so_far: list = []
+    t_start = time.monotonic()
+
     def on_result(r):
+        results_so_far.append(r)
         status_style = {
             "PASS": "green",
             "FAIL": "red",
@@ -89,15 +94,36 @@ def cmd_run(args: argparse.Namespace) -> None:
             f"[dim]{r.group:<28}[/dim]  {r.name}  [dim]{dur}[/dim]"
         )
 
-    result = asyncio.run(
-        _data_run_tests(
-            entries,
-            repeat=args.repeat,
-            shuffle=args.shuffle,
-            executor_override=args.executor,
-            on_result=on_result,
+    try:
+        result = asyncio.run(
+            _data_run_tests(
+                entries,
+                repeat=args.repeat,
+                shuffle=args.shuffle,
+                executor_override=args.executor,
+                on_result=on_result,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        elapsed = int(time.monotonic() - t_start)
+        console.print("\n[yellow]Interrupted.[/yellow]")
+        result = {
+            "results": [
+                {
+                    "name": r.name,
+                    "group": r.group,
+                    "status": r.status,
+                    "duration_secs": r.duration_secs,
+                    "round": r.round_num,
+                }
+                for r in results_so_far
+            ],
+            "total_secs": elapsed,
+            "passed": sum(1 for r in results_so_far if r.status == "PASS"),
+            "failed": sum(1 for r in results_so_far if r.status in ("FAIL", "TIMEOUT")),
+            "skipped": sum(1 for r in results_so_far if r.status in ("SKIP", "INTR")),
+            "log_file": str(LOG_FILE),
+        }
 
     _print_summary(result, args.repeat > 1)
 
