@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from .config import LOG_FILE
 from .executor import get_executor
+from .log_analysis import get_error_hint
 from .models import RunResult, TestEntry, TestResult
+
+_CRASH_SIGNAL_RE = re.compile(r"received signal (SIG\w+)")
+_MAX_OUTPUT_LINES = 300
+_GDB_NOISE_RE = re.compile(
+    r"^\[(?:New Thread 0x|Detaching after (?:fork|vfork) from (?:child|parent) process )"
+)
 
 
 def fmt_duration(secs: int) -> str:
@@ -16,6 +24,22 @@ def fmt_duration(secs: int) -> str:
     if secs >= 60:
         return f"{secs // 60}m{secs % 60:02d}s"
     return f"{secs}s"
+
+
+def _has_crash_in_output(output: str) -> bool:
+    return bool(_CRASH_SIGNAL_RE.search(output))
+
+
+def _filter_gdb_noise(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not _GDB_NOISE_RE.match(line))
+
+
+def _truncate_output(text: str, max_lines: int = _MAX_OUTPUT_LINES) -> str:
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    dropped = len(lines) - max_lines
+    return "\n".join(lines[:max_lines]) + f"\n... [{dropped} lines truncated] ..."
 
 
 async def _run_single(
@@ -38,15 +62,15 @@ async def _run_single(
         log_file.parent.mkdir(parents=True, exist_ok=True)
         with log_file.open("a") as f:
             f.write(
-                f"=== [round {round_num}] {entry.name}: SKIP "
-                f"(binary not found: {binary}) ===\n\n"
+                f"=== [round {round_num}] {entry.name}: FAIL (binary not found: {binary}) ===\n\n"
             )
         return TestResult(
             name=entry.name,
             group=entry.group,
-            status="SKIP",
+            status="FAIL",
             duration_secs=None,
             round_num=round_num,
+            error_hint=None,
         )
 
     cmd = executor.build_command(binary, entry.test_cases or None)
@@ -100,6 +124,7 @@ async def _run_single(
             status="FAIL",
             duration_secs=elapsed,
             round_num=round_num,
+            error_hint=None,
         )
 
     elapsed = int(time.monotonic() - t_start)
@@ -111,6 +136,12 @@ async def _run_single(
         log_line = (
             f"=== [round {round_num}] {entry.name}{tc_info}: TIMEOUT "
             f"({fmt_duration(elapsed)}, limit {fmt_duration(timeout)}) ===\n"
+        )
+    elif exit_code == 0 and _has_crash_in_output(output):
+        status = "CRASH"
+        log_line = (
+            f"=== [round {round_num}] {entry.name}{tc_info}: CRASH "
+            f"(signal in output, exit 0, {fmt_duration(elapsed)}) ===\n"
         )
     elif exit_code == 0:
         status = "PASS"
@@ -124,11 +155,15 @@ async def _run_single(
             f"(exit {exit_code}, {fmt_duration(elapsed)}) ===\n"
         )
 
+    hint = get_error_hint(output.splitlines(), status) if output else None
+
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("a") as f:
         f.write(log_line)
         if output:
-            f.write(output)
+            filtered_output = _filter_gdb_noise(output)
+            filtered_output = _truncate_output(filtered_output)
+            f.write(filtered_output)
         f.write("\n")
 
     return TestResult(
@@ -137,6 +172,7 @@ async def _run_single(
         status=status,
         duration_secs=elapsed,
         round_num=round_num,
+        error_hint=hint,
     )
 
 
@@ -163,6 +199,7 @@ async def _data_run_tests(
 
             random.shuffle(round_entries)
 
+        prev_name: str | None = None
         for entry in round_entries:
             try:
                 result = await _run_single(entry, round_num, executor_override, log_file)
@@ -179,12 +216,14 @@ async def _data_run_tests(
                 if on_result:
                     on_result(result)
                 raise
+            result.predecessor = prev_name
+            prev_name = entry.name
             run_result.results.append(result)
             if result.status == "PASS":
                 run_result.passed += 1
             elif result.status in ("SKIP", "INTR"):
                 run_result.skipped += 1
-            else:
+            else:  # FAIL, CRASH, TIMEOUT
                 run_result.failed += 1
             if on_result:
                 on_result(result)
@@ -199,6 +238,8 @@ async def _data_run_tests(
                 "status": r.status,
                 "duration_secs": r.duration_secs,
                 "round": r.round_num,
+                "error_hint": r.error_hint,
+                "predecessor": r.predecessor,
             }
             for r in run_result.results
         ],

@@ -11,9 +11,11 @@ from rich.console import Console
 
 from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR
 from .executor import list_executors
+from .log_analysis import aggregate_failures, filter_log_lines, parse_log
 from .playlist import (
     _data_add_tests,
     _data_create_playlist,
+    _data_create_playlist_from_dir,
     _data_delete_playlist,
     _data_get_playlist,
     _data_list_playlists,
@@ -127,9 +129,7 @@ _TOOLS = [
                             "test_cases": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": (
-                                    "Qt test function names to run. Omit to run all."
-                                ),
+                                "description": ("Qt test function names to run. Omit to run all."),
                             },
                         },
                         "required": ["name"],
@@ -183,15 +183,58 @@ _TOOLS = [
         name="get_last_log",
         description=(
             "Return the content of the most recent test run log. "
-            "Use after run_tests to inspect GDB backtraces, valgrind output, or test output."
+            "Use after run_tests to inspect GDB backtraces, valgrind output, or test output. "
+            "Use test_filter or errors_only to reduce output size. Hard cap: 500 lines."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "max_lines": {
                     "type": "integer",
-                    "description": "Maximum number of lines to return (from the end of the file).",
+                    "description": "Lines to return (hard cap: 500, default: 200).",
                     "default": 200,
+                },
+                "test_filter": {
+                    "type": "string",
+                    "description": "Return only sections whose test name contains this string.",
+                },
+                "errors_only": {
+                    "type": "boolean",
+                    "description": "Skip PASS sections; return only FAIL/TIMEOUT/CRASH sections.",
+                    "default": False,
+                },
+                "from_start": {
+                    "type": "boolean",
+                    "description": "Read from log start (default: tail). Use for early failures.",
+                    "default": False,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="analyze_last_run",
+        description=(
+            "Parse the last run log and return structured error analysis per test: "
+            "crash type, signal, assertion text, and user-code stack frames only "
+            "(stdlib/Qt frames stripped). Much more compact than get_last_log. "
+            "Use this instead of get_last_log when diagnosing failures."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "failed_only": {
+                    "type": "boolean",
+                    "description": "Only include failed/crashed tests (default: true).",
+                    "default": True,
+                },
+                "aggregate": {
+                    "type": "boolean",
+                    "description": (
+                        "Group failures by test name with flakiness rate (default true). "
+                        "Set false for per-round detail."
+                    ),
+                    "default": True,
                 },
             },
             "required": [],
@@ -220,6 +263,40 @@ _TOOLS = [
         name="migrate_all_playlists",
         description="Migrate all .ini playlists to YAML format, deleting the old .ini files.",
         inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    Tool(
+        name="create_playlist_from_dir",
+        description=(
+            "Discover tests from a CTestTestfile.cmake subdirectory and add them to a playlist. "
+            "Reads {build_dir}/test/{subdir}/CTestTestfile.cmake, extracts all subdirs() entries "
+            "(each is a test binary name), creates the playlist if it does not exist, and adds "
+            "all discovered tests. Much faster than manual add_tests for large test directories."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Playlist name."},
+                "build_dir": {
+                    "type": "string",
+                    "description": "Path to the cmake build directory.",
+                },
+                "subdir": {
+                    "type": "string",
+                    "description": "Test subdirectory, e.g. 'fast_running' or 'long_running'.",
+                },
+                "group": {
+                    "type": "string",
+                    "description": "Group name inside the playlist.",
+                },
+                "executor": {
+                    "type": "string",
+                    "description": "Executor name (default: gdb).",
+                },
+                "timeout_fast": {"type": "integer"},
+                "timeout_long": {"type": "integer"},
+            },
+            "required": ["name", "build_dir", "subdir", "group"],
+        },
     ),
 ]
 
@@ -262,6 +339,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     shuffle=arguments.get("shuffle", False),
                     executor_override=arguments.get("executor"),
                 )
+                MAX_RESULT_ENTRIES = 500
+                entries_list = result.get("results", [])
+                if len(entries_list) > MAX_RESULT_ENTRIES:
+                    result["results"] = entries_list[:MAX_RESULT_ENTRIES]
+                    result["results_truncated"] = True
+                    result["results_total"] = len(entries_list)
+                    result["warning"] = (
+                        f"Results truncated: showing {MAX_RESULT_ENTRIES} of"
+                        f" {len(entries_list)} entries."
+                        " Later rounds may be missing from analysis."
+                    )
             case "list_playlists":
                 result = await asyncio.to_thread(_data_list_playlists)
             case "get_playlist":
@@ -290,22 +378,61 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             case "delete_playlist":
                 result = await asyncio.to_thread(_data_delete_playlist, arguments["name"])
             case "get_last_log":
-                max_lines = arguments.get("max_lines", 200)
+                max_lines = min(arguments.get("max_lines", 200), 500)
+                test_filter = arguments.get("test_filter")
+                errors_only = arguments.get("errors_only", False)
+                from_start = arguments.get("from_start", False)
                 if LOG_FILE.exists():
                     lines = LOG_FILE.read_text().splitlines()
+                    total = len(lines)
+                    if test_filter or errors_only:
+                        lines = filter_log_lines(lines, test_filter, errors_only)
+                    selected = lines[:max_lines] if from_start else lines[-max_lines:]
                     result = {
-                        "lines": lines[-max_lines:],
-                        "total_lines": len(lines),
+                        "lines": selected,
+                        "total_lines": total,
+                        "filtered_lines": len(lines),
+                        "capped": len(lines) > max_lines,
                         "path": str(LOG_FILE),
                     }
                 else:
-                    result = {"lines": [], "total_lines": 0, "path": str(LOG_FILE)}
+                    result = {
+                        "lines": [],
+                        "total_lines": 0,
+                        "filtered_lines": 0,
+                        "capped": False,
+                        "path": str(LOG_FILE),
+                    }
+            case "analyze_last_run":
+                failed_only = arguments.get("failed_only", True)
+                aggregate = arguments.get("aggregate", True)
+                if LOG_FILE.exists():
+                    analysis = parse_log(LOG_FILE.read_text())
+                    total_rounds = analysis["summary"].get("total_rounds", 1)
+                    if failed_only:
+                        analysis["tests"] = [t for t in analysis["tests"] if t["status"] != "PASS"]
+                    if aggregate:
+                        analysis["tests"] = aggregate_failures(analysis["tests"], total_rounds)
+                    result = analysis
+                else:
+                    result = {"tests": [], "summary": {"total": 0, "passed": 0, "failed": 0}}
             case "list_executors":
                 result = list_executors()
             case "migrate_playlist":
                 result = await asyncio.to_thread(_data_migrate_playlist, arguments["name"])
             case "migrate_all_playlists":
                 result = await asyncio.to_thread(_data_migrate_all_playlists)
+            case "create_playlist_from_dir":
+                result = await asyncio.to_thread(
+                    _data_create_playlist_from_dir,
+                    arguments["name"],
+                    arguments["build_dir"],
+                    arguments["subdir"],
+                    arguments["group"],
+                    arguments.get("executor", "gdb"),
+                    arguments.get("timeout_fast"),
+                    arguments.get("timeout_long"),
+                )
             case _:
                 result = {"error": f"Unknown tool: {name}"}
     except Exception as e:

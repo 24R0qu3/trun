@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re as _re
 from pathlib import Path
 
 import yaml
 
 from .config import DEFAULT_BUILD, PLAYLISTS_DIR
 from .models import TestEntry
+
+_CTEST_SUBDIRS_RE = _re.compile(r'^subdirs\("([^"]+)"\)')
 
 _FAST_TESTS = [
     "rst_tfr_rst_smc_core_mediator",
@@ -147,9 +150,7 @@ def _data_load_playlist_file(path: str) -> list[TestEntry]:
 
 def _data_list_playlists() -> list[dict]:
     PLAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
-    return [
-        {"name": p.stem, "path": str(p)} for p in sorted(PLAYLISTS_DIR.glob("*.yaml"))
-    ]
+    return [{"name": p.stem, "path": str(p)} for p in sorted(PLAYLISTS_DIR.glob("*.yaml"))]
 
 
 def _resolve_playlist_path(name: str) -> Path:
@@ -205,8 +206,7 @@ def _data_add_tests(
     if not path.exists():
         return {
             "error": (
-                f"Playlist '{name}' not found. "
-                f"Create it first with 'trun playlist create {name}'"
+                f"Playlist '{name}' not found. Create it first with 'trun playlist create {name}'"
             )
         }
 
@@ -307,3 +307,37 @@ def _data_migrate_all_playlists() -> dict:
         for p in sorted(PLAYLISTS_DIR.glob("*.ini"))
     ]
     return {"migrations": results}
+
+
+def _parse_ctest_subdirs(cmake_path: Path) -> list[str]:
+    return [
+        m.group(1)
+        for line in cmake_path.read_text().splitlines()
+        if (m := _CTEST_SUBDIRS_RE.match(line.strip()))
+    ]
+
+
+def _data_create_playlist_from_dir(
+    name: str,
+    build_dir: str,
+    subdir: str,
+    group: str,
+    executor: str = "gdb",
+    timeout_fast: int | None = None,
+    timeout_long: int | None = None,
+) -> dict:
+    cmake_path = Path(build_dir) / "test" / subdir / "CTestTestfile.cmake"
+    if not cmake_path.exists():
+        return {"error": f"CTestTestfile.cmake not found: {cmake_path}"}
+    test_names = _parse_ctest_subdirs(cmake_path)
+    if not test_names:
+        return {"error": f"No subdirs() entries found in {cmake_path}"}
+    if not _resolve_playlist_path(name).exists():
+        _data_create_playlist(name)
+    tests = [{"name": t} for t in test_names]
+    result = _data_add_tests(
+        name, group, build_dir, subdir, tests, executor, timeout_fast, timeout_long
+    )
+    result["discovered"] = len(test_names)
+    result["tests"] = test_names
+    return result

@@ -25,7 +25,7 @@ class GDBExecutor(Executor):
         )
 
     def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
-        base = ["gdb", "-batch", "-ex", "run", "-ex", "bt", "-ex", "quit"]
+        base = ["gdb", "--return-child-result", "-batch", "-ex", "run", "-ex", "bt", "-ex", "quit"]
         if test_cases:
             return base + ["--args", binary, *test_cases]
         return base + [binary]

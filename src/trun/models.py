@@ -4,10 +4,10 @@ from dataclasses import dataclass, field
 @dataclass
 class TestEntry:
     name: str
-    subdir: str             # "fast_running" / "long_running" / custom
+    subdir: str  # "fast_running" / "long_running" / custom
     build_dir: str
     group: str
-    executor: str = "gdb"   # per-section executor; overridable at run time
+    executor: str = "gdb"  # per-section executor; overridable at run time
     timeout: int | None = None  # explicit override; None → use executor default for subdir
     test_cases: list[str] = field(default_factory=list)  # empty = run all
 
@@ -16,9 +16,11 @@ class TestEntry:
 class TestResult:
     name: str
     group: str
-    status: str             # PASS / FAIL / TIMEOUT / INTR / SKIP
+    status: str  # PASS / FAIL / TIMEOUT / INTR / SKIP / CRASH
     duration_secs: int | None
     round_num: int = 1
+    error_hint: str | None = None
+    predecessor: str | None = None
 
 
 @dataclass

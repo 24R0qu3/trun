@@ -1,13 +1,19 @@
 import asyncio
 import shutil
 import subprocess
-import sys
 
 import pytest
 
 from trun.executor import get_executor, list_executors
 from trun.models import TestEntry
-from trun.runner import _data_run_tests, fmt_duration
+from trun.runner import (
+    _MAX_OUTPUT_LINES,
+    _data_run_tests,
+    _filter_gdb_noise,
+    _has_crash_in_output,
+    _truncate_output,
+    fmt_duration,
+)
 
 
 def test_fmt_duration_seconds():
@@ -35,6 +41,7 @@ def test_get_executor_gdb():
     assert cmd[0] == "gdb"
     assert "/tmp/my_binary" in cmd
     assert "-batch" in cmd
+    assert "--return-child-result" in cmd
 
 
 def test_get_executor_direct():
@@ -109,10 +116,10 @@ async def test_run_tests_skip_missing_binary(tmp_path):
     ]
     log = tmp_path / "test.log"
     result = await _data_run_tests(entries, log_file=log)
-    assert result["skipped"] == 1
+    assert result["skipped"] == 0
     assert result["passed"] == 0
-    assert result["failed"] == 0
-    assert result["results"][0]["status"] == "SKIP"
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "FAIL"
 
 
 async def test_run_tests_multiple_entries_all_skip(tmp_path):
@@ -122,14 +129,13 @@ async def test_run_tests_multiple_entries_all_skip(tmp_path):
     ]
     log = tmp_path / "test.log"
     result = await _data_run_tests(entries, log_file=log)
-    assert result["skipped"] == 3
+    assert result["failed"] == 3
+    assert result["skipped"] == 0
     assert len(result["results"]) == 3
 
 
 async def test_run_tests_repeat(tmp_path):
-    entries = [
-        TestEntry(name="test_x", subdir="fast_running", build_dir="/no/such/dir", group="g")
-    ]
+    entries = [TestEntry(name="test_x", subdir="fast_running", build_dir="/no/such/dir", group="g")]
     log = tmp_path / "test.log"
     result = await _data_run_tests(entries, repeat=3, log_file=log)
     assert len(result["results"]) == 3
@@ -310,18 +316,13 @@ async def test_gdb_pass(tmp_path):
 
 
 @gdb_and_gcc
-@pytest.mark.skip(
-    reason=(
-        "gdb -batch exits 0 regardless of inferior exit/signal; "
-        "crash detection requires --return-child-result or output parsing"
-    )
-)
 async def test_gdb_fail(tmp_path):
     entry = _compile_gdb_entry(tmp_path, "#include <stdlib.h>\nint main(void) { abort(); }\n")
     log = tmp_path / "test.log"
     result = await _data_run_tests([entry], log_file=log)
     assert result["failed"] == 1
-    assert result["results"][0]["status"] == "FAIL"
+    # --return-child-result makes GDB exit non-zero; output-based detection catches it too
+    assert result["results"][0]["status"] in ("FAIL", "CRASH")
 
 
 @gdb_and_gcc
@@ -346,3 +347,67 @@ async def test_gdb_intr(tmp_path):
     result = await _cancel_after(0.5, _data_run_tests([entry], log_file=log))
     assert result is None
     assert "INTR" in log.read_text()
+
+
+# ── unit tests for new helper functions ───────────────────────────────────────
+
+
+def test_has_crash_sigabrt():
+    assert _has_crash_in_output("received signal SIGABRT, Aborted.") is True
+
+
+def test_has_crash_sigsegv():
+    assert _has_crash_in_output("received signal SIGSEGV") is True
+
+
+def test_has_crash_negative():
+    assert _has_crash_in_output("all tests passed") is False
+
+
+def test_has_crash_empty():
+    assert _has_crash_in_output("") is False
+
+
+def test_filter_gdb_noise_removes_new_thread():
+    text = "[New Thread 0x7ffff7e18000 (LWP 1234)]\nOther output"
+    assert "[New Thread" not in _filter_gdb_noise(text)
+    assert "Other output" in _filter_gdb_noise(text)
+
+
+def test_filter_gdb_noise_removes_detaching():
+    text = "[Detaching after vfork from child process 1234]\nOther output"
+    assert "[Detaching" not in _filter_gdb_noise(text)
+    assert "Other output" in _filter_gdb_noise(text)
+
+
+def test_filter_gdb_noise_keeps_signal_line():
+    line = 'Thread 13 "Server (pooled)" received signal SIGABRT'
+    assert _filter_gdb_noise(line) == line
+
+
+def test_filter_gdb_noise_keeps_regular_lines():
+    text = "Regular output\nAnother line"
+    assert _filter_gdb_noise(text) == text
+
+
+def test_truncate_output_under_limit():
+    text = "line1\nline2\nline3"
+    assert _truncate_output(text, max_lines=10) == text
+
+
+def test_truncate_output_at_limit():
+    text = "line1\nline2\nline3"
+    assert _truncate_output(text, max_lines=3) == text
+
+
+def test_truncate_output_over_limit():
+    text = "\n".join(f"line{i}" for i in range(1, 10))
+    result = _truncate_output(text, max_lines=5)
+    assert "truncated" in result
+    assert "[4 lines truncated]" in result
+    assert len(result.splitlines()) == 6
+
+
+def test_truncate_output_default_limit():
+    text = "\n".join(f"line{i}" for i in range(_MAX_OUTPUT_LINES + 10))
+    assert "truncated" in _truncate_output(text)
