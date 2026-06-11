@@ -11,6 +11,7 @@ from rich.console import Console
 
 from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR
 from .executor import list_executors
+from .history import _append_run_history, _get_run_history
 from .log_analysis import aggregate_failures, filter_log_lines, parse_log
 from .models import TestEntry
 from .playlist import (
@@ -237,6 +238,41 @@ _TOOLS = [
                         "Set false for per-round detail."
                     ),
                     "default": True,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_run_history",
+        description=(
+            "Return summaries of the last N test runs. "
+            "Use compute_flakiness=true to get a per-test pass/fail rate table across those runs. "
+            "Use include_results=true to attach compact per-test status lists (higher token cost)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "n": {
+                    "type": "integer",
+                    "description": "Number of recent runs to return (default: 10).",
+                    "default": 10,
+                },
+                "compute_flakiness": {
+                    "type": "boolean",
+                    "description": (
+                        "Compute aggregated pass/fail rate per test across the selected runs "
+                        "(default: false)."
+                    ),
+                    "default": False,
+                },
+                "include_results": {
+                    "type": "boolean",
+                    "description": (
+                        "Include per-test status lists in each run entry (default: false). "
+                        "Higher token cost — omit unless you need individual run details."
+                    ),
+                    "default": False,
                 },
             },
             "required": [],
@@ -478,6 +514,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         f" {len(entries_list)} entries."
                         " Later rounds may be missing from analysis."
                     )
+                await asyncio.to_thread(_append_run_history, arguments.get("playlist"), result)
             case "run_and_analyze":
                 playlist = arguments.get("playlist")
                 if playlist:
@@ -520,6 +557,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     failures = [t for t in analysis["tests"] if t["status"] != "PASS"]
                     result["failures"] = aggregate_failures(failures, total_rounds)
                     result["total_rounds"] = total_rounds
+                await asyncio.to_thread(_append_run_history, arguments.get("playlist"), run_result)
             case "list_playlists":
                 result = await asyncio.to_thread(_data_list_playlists)
             case "get_playlist":
@@ -586,6 +624,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     result = analysis
                 else:
                     result = {"tests": [], "summary": {"total": 0, "passed": 0, "failed": 0}}
+            case "get_run_history":
+                result = await asyncio.to_thread(
+                    _get_run_history,
+                    arguments.get("n", 10),
+                    arguments.get("compute_flakiness", False),
+                    arguments.get("include_results", False),
+                )
             case "list_executors":
                 result = list_executors()
             case "migrate_playlist":
@@ -602,6 +647,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     test_cases=arguments.get("test_cases", []),
                 )
                 result = await _data_run_tests([entry])
+                await asyncio.to_thread(_append_run_history, None, result)
             case "get_test_cases":
                 result = await _data_get_test_cases(
                     arguments["name"],
