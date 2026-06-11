@@ -474,3 +474,39 @@ async def test_run_single_fail(tmp_path):
     result = await _data_run_tests([entry], log_file=log)
     assert result["failed"] == 1
     assert result["passed"] == 0
+
+
+# ── run_and_analyze (logic layer) ─────────────────────────────────────────────
+
+
+async def test_run_and_analyze_shape_pass(tmp_path):
+    from trun.log_analysis import aggregate_failures, parse_log
+
+    binary = _make_pytest_file(tmp_path, "def test_it(): pass\n")
+    log = tmp_path / "test.log"
+    entry = TestEntry(
+        name=binary, subdir="fast_running", build_dir=None, group="g", executor="pytest"
+    )
+    run_result = await _data_run_tests([entry], log_file=log)
+    analysis = parse_log(log.read_text())
+    failures = [t for t in analysis["tests"] if t["status"] != "PASS"]
+    aggregated = aggregate_failures(failures, analysis["summary"].get("total_rounds", 1))
+    assert run_result["passed"] == 1
+    assert aggregated == []
+
+
+async def test_run_and_analyze_shape_fail(tmp_path):
+    from trun.log_analysis import aggregate_failures, parse_log
+
+    binary = _make_pytest_file(tmp_path, "def test_it(): assert False\n")
+    log = tmp_path / "test.log"
+    entry = TestEntry(
+        name=binary, subdir="fast_running", build_dir=None, group="g", executor="pytest"
+    )
+    run_result = await _data_run_tests([entry], log_file=log)
+    analysis = parse_log(log.read_text())
+    failures = [t for t in analysis["tests"] if t["status"] != "PASS"]
+    aggregated = aggregate_failures(failures, analysis["summary"].get("total_rounds", 1))
+    assert run_result["failed"] == 1
+    assert len(aggregated) == 1
+    assert aggregated[0]["name"] == binary

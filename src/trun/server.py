@@ -267,6 +267,48 @@ _TOOLS = [
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
+        name="run_and_analyze",
+        description=(
+            "Run a test playlist (or built-in suite) and return structured failure analysis "
+            "in a single call — no need for a follow-up analyze_last_run. "
+            "Returns summary counts plus aggregated failure details (crash type, signal, "
+            "assertion, user-code frames). Raw per-test results are omitted to save tokens; "
+            "use get_last_log if you need the full output."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "playlist": {
+                    "type": "string",
+                    "description": (
+                        "Named playlist or path to .yaml file. Omit to run built-in suite."
+                    ),
+                },
+                "build_dir": {
+                    "type": "string",
+                    "description": "Build directory (built-in suite only).",
+                    "default": DEFAULT_BUILD,
+                },
+                "repeat": {
+                    "type": "integer",
+                    "description": "Number of repetitions.",
+                    "default": 1,
+                },
+                "shuffle": {
+                    "type": "boolean",
+                    "description": "Randomize test order each round.",
+                    "default": False,
+                },
+                "executor": {
+                    "type": "string",
+                    "description": "Override executor for all tests (gdb/direct/valgrind/pytest).",
+                    "enum": ["gdb", "direct", "valgrind", "pytest"],
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
         name="run_single_test",
         description=(
             "Run a single test binary without needing a playlist. "
@@ -436,6 +478,48 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         f" {len(entries_list)} entries."
                         " Later rounds may be missing from analysis."
                     )
+            case "run_and_analyze":
+                playlist = arguments.get("playlist")
+                if playlist:
+                    path = Path(playlist)
+                    if not path.exists():
+                        named = PLAYLISTS_DIR / f"{playlist}.yaml"
+                        if not named.exists():
+                            ini_fallback = PLAYLISTS_DIR / f"{playlist}.ini"
+                            if ini_fallback.exists():
+                                result = {
+                                    "error": (
+                                        f"Playlist '{playlist}' is still in .ini format. "
+                                        f"Use migrate_playlist to convert it first."
+                                    )
+                                }
+                            else:
+                                result = {"error": f"Playlist '{playlist}' not found"}
+                            return [TextContent(type="text", text=json.dumps(result))]
+                        path = named
+                    entries = await asyncio.to_thread(_data_load_playlist_file, str(path))
+                else:
+                    build_dir = arguments.get("build_dir", DEFAULT_BUILD)
+                    entries = await asyncio.to_thread(_data_load_builtin, build_dir)
+                run_result = await _data_run_tests(
+                    entries,
+                    repeat=arguments.get("repeat", 1),
+                    shuffle=arguments.get("shuffle", False),
+                    executor_override=arguments.get("executor"),
+                )
+                result = {
+                    "passed": run_result["passed"],
+                    "failed": run_result["failed"],
+                    "skipped": run_result["skipped"],
+                    "total_secs": run_result["total_secs"],
+                    "log_file": run_result["log_file"],
+                }
+                if LOG_FILE.exists():
+                    analysis = parse_log(LOG_FILE.read_text())
+                    total_rounds = analysis["summary"].get("total_rounds", 1)
+                    failures = [t for t in analysis["tests"] if t["status"] != "PASS"]
+                    result["failures"] = aggregate_failures(failures, total_rounds)
+                    result["total_rounds"] = total_rounds
             case "list_playlists":
                 result = await asyncio.to_thread(_data_list_playlists)
             case "get_playlist":
