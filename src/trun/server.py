@@ -18,6 +18,7 @@ from .playlist import (
     _data_create_playlist_from_dir,
     _data_delete_playlist,
     _data_get_playlist,
+    _data_list_available_tests,
     _data_list_playlists,
     _data_load_builtin,
     _data_load_playlist_file,
@@ -265,6 +266,31 @@ _TOOLS = [
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
+        name="list_available_tests",
+        description=(
+            "Discover test binary names available in a build directory by reading "
+            "CTestTestfile.cmake. Returns test names grouped by subdir. "
+            "Use before creating a playlist to know what tests exist."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "build_dir": {
+                    "type": "string",
+                    "description": "Path to the cmake build directory.",
+                },
+                "subdir": {
+                    "type": "string",
+                    "description": (
+                        "Test subdirectory to scan (e.g. 'fast_running' or 'long_running'). "
+                        "Omit to scan both."
+                    ),
+                },
+            },
+            "required": ["build_dir"],
+        },
+    ),
+    Tool(
         name="create_playlist_from_dir",
         description=(
             "Discover tests from a CTestTestfile.cmake subdirectory and add them to a playlist. "
@@ -422,6 +448,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 result = await asyncio.to_thread(_data_migrate_playlist, arguments["name"])
             case "migrate_all_playlists":
                 result = await asyncio.to_thread(_data_migrate_all_playlists)
+            case "list_available_tests":
+                result = await asyncio.to_thread(
+                    _data_list_available_tests,
+                    arguments["build_dir"],
+                    arguments.get("subdir"),
+                )
             case "create_playlist_from_dir":
                 result = await asyncio.to_thread(
                     _data_create_playlist_from_dir,

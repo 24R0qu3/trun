@@ -317,6 +317,15 @@ def _parse_ctest_subdirs(cmake_path: Path) -> list[str]:
     ]
 
 
+def _data_list_available_tests(build_dir: str, subdir: str | None = None) -> dict:
+    subdirs = [subdir] if subdir else ["fast_running", "long_running"]
+    tests: dict[str, list[str]] = {}
+    for sd in subdirs:
+        cmake_path = Path(build_dir) / "test" / sd / "CTestTestfile.cmake"
+        tests[sd] = _parse_ctest_subdirs(cmake_path) if cmake_path.exists() else []
+    return {"build_dir": build_dir, "tests": tests}
+
+
 def _data_create_playlist_from_dir(
     name: str,
     build_dir: str,
