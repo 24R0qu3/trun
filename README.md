@@ -169,6 +169,8 @@ Or manually add the output of `trun mcp --print-config` to `~/.claude.json`.
 | Tool | Description |
 |------|-------------|
 | `run_tests` | Run a playlist or built-in suite; result includes `error_hint` and `predecessor` per test; capped at 500 entries |
+| `run_and_analyze` | Run a playlist and return structured failure analysis in one call — no follow-up needed; omits raw results to save tokens |
+| `run_single_test` | Run one test binary directly without a playlist |
 | `list_playlists` | List saved playlists |
 | `get_playlist` | Get full contents of a playlist |
 | `create_playlist` | Create an empty playlist |
@@ -177,6 +179,9 @@ Or manually add the output of `trun mcp --print-config` to `~/.claude.json`.
 | `delete_playlist` | Delete a playlist |
 | `get_last_log` | Fetch the last run log (hard cap 500 lines; supports `test_filter`, `errors_only`, `from_start`) |
 | `analyze_last_run` | Parse last run log into structured per-test or aggregated analysis: crash type, signal, assertion, user-code frames, flakiness rate |
+| `get_run_history` | Return summaries of the last N runs; `compute_flakiness=true` adds a per-test pass/fail rate table |
+| `list_available_tests` | Discover test binary names from a build directory's CTestTestfile.cmake |
+| `get_test_cases` | List Qt test function names inside a test binary by running it with `-functions` |
 | `create_playlist_from_dir` | Discover test binaries from CTestTestfile.cmake subdirectory and bulk-add them to a playlist |
 | `list_executors` | List execution modes and timeouts |
 | `migrate_playlist` | Convert a single `.ini` playlist to YAML |
@@ -216,6 +221,51 @@ When `aggregate` is false, returns per-round entries: `status`, `crash_type`, `s
 
 Reads `{build_dir}/test/{subdir}/CTestTestfile.cmake` and extracts all `subdirs("...")` entries as test binary names. Creates the playlist if it does not exist. Much faster than manual `add_tests` for large test directories.
 
+#### `run_and_analyze` parameters
+
+Accepts the same parameters as `run_tests`. Returns summary counts (`passed`, `failed`, `skipped`, `total_secs`) and a `failures` array (same format as `analyze_last_run` with `aggregate=true`). The raw per-test `results` array is omitted; use `get_last_log` if you need the full output.
+
+#### `run_single_test` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `name` | required | Test binary name |
+| `build_dir` | required | Build directory containing the binary |
+| `subdir` | `fast_running` | Test subdirectory |
+| `executor` | `gdb` | Executor to use |
+| `test_cases` | — | Qt test function names to run; omit to run all |
+
+Returns the same shape as `run_tests`.
+
+#### `list_available_tests` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `build_dir` | required | Path to the cmake build directory |
+| `subdir` | — | Subdirectory to scan (`fast_running` or `long_running`); omit to scan both |
+
+Returns `{"build_dir": "...", "tests": {"fast_running": [...], "long_running": [...]}}`.
+
+#### `get_test_cases` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `name` | required | Test binary name |
+| `build_dir` | required | Build directory containing the binary |
+| `subdir` | `fast_running` | Test subdirectory |
+
+Runs `binary -functions` and returns the list of Qt test function names. Use the result to populate `test_cases` in `add_tests` for targeted re-runs.
+
+#### `get_run_history` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n` | 10 | Number of recent runs to return (most-recent first) |
+| `compute_flakiness` | false | Compute per-test pass/fail rates across the selected runs; returned as a compact `flakiness` table |
+| `include_results` | false | Attach per-test status lists to each run entry (higher token cost) |
+
+History is stored in `~/.local/share/trun/run_history.jsonl` (capped at 50 entries). A new entry is appended after every `run_tests`, `run_single_test`, and `run_and_analyze` call.
+
 ## Configuration
 
 | Environment variable | Description |
@@ -223,4 +273,5 @@ Reads `{build_dir}/test/{subdir}/CTestTestfile.cmake` and extracts all `subdirs(
 | `TRUN_BUILD_DIR` | Default build directory for the built-in suite |
 
 Config: `~/.config/trun/`  
-Logs: `~/.local/share/trun/last_run.log`
+Logs: `~/.local/share/trun/last_run.log`  
+History: `~/.local/share/trun/run_history.jsonl`
