@@ -176,6 +176,26 @@ async def _run_single(
     )
 
 
+async def _data_get_test_cases(name: str, build_dir: str, subdir: str = "fast_running") -> dict:
+    binary = str(Path(build_dir) / "test" / subdir / name / name)
+    if not Path(binary).is_file():
+        return {"error": f"Binary not found: {binary}"}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            binary,
+            "-functions",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        cases = [ln.strip() for ln in stdout.decode(errors="replace").splitlines() if ln.strip()]
+        return {"name": name, "subdir": subdir, "build_dir": build_dir, "test_cases": cases}
+    except asyncio.TimeoutError:
+        return {"error": f"Timed out listing test cases for {name}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def _data_run_tests(
     entries: list[TestEntry],
     repeat: int = 1,

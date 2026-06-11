@@ -8,6 +8,7 @@ from trun.executor import get_executor, list_executors
 from trun.models import TestEntry
 from trun.runner import (
     _MAX_OUTPUT_LINES,
+    _data_get_test_cases,
     _data_run_tests,
     _filter_gdb_noise,
     _has_crash_in_output,
@@ -411,3 +412,39 @@ def test_truncate_output_over_limit():
 def test_truncate_output_default_limit():
     text = "\n".join(f"line{i}" for i in range(_MAX_OUTPUT_LINES + 10))
     assert "truncated" in _truncate_output(text)
+
+
+# ── get_test_cases ────────────────────────────────────────────────────────────
+
+
+def _make_functions_binary(tmp_path, functions: list[str], name: str = "my_test") -> str:
+    """Create a binary that prints test function names when called with -functions."""
+    build_dir = tmp_path / "build"
+    binary_path = build_dir / "test" / "fast_running" / name / name
+    binary_path.parent.mkdir(parents=True)
+    lines = ["#!/usr/bin/env python3", "import sys"]
+    fn_list = "\n".join(f'    print("{f}")' for f in functions)
+    binary_path.write_text(
+        f"{lines[0]}\n{lines[1]}\nif sys.argv[1:] == ['-functions']:\n{fn_list}\n"
+    )
+    binary_path.chmod(0o755)
+    return str(build_dir)
+
+
+async def test_get_test_cases_returns_functions(tmp_path):
+    build_dir = _make_functions_binary(tmp_path, ["tst_foo()", "tst_bar()"])
+    result = await _data_get_test_cases("my_test", build_dir)
+    assert result["test_cases"] == ["tst_foo()", "tst_bar()"]
+    assert result["name"] == "my_test"
+
+
+async def test_get_test_cases_missing_binary(tmp_path):
+    result = await _data_get_test_cases("no_such_test", str(tmp_path))
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+async def test_get_test_cases_empty_output(tmp_path):
+    build_dir = _make_functions_binary(tmp_path, [])
+    result = await _data_get_test_cases("my_test", build_dir)
+    assert result["test_cases"] == []

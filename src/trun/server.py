@@ -26,7 +26,7 @@ from .playlist import (
     _data_migrate_playlist,
     _data_remove_tests,
 )
-from .runner import _data_run_tests
+from .runner import _data_get_test_cases, _data_run_tests
 
 console = Console(stderr=True)
 
@@ -266,6 +266,30 @@ _TOOLS = [
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
+        name="get_test_cases",
+        description=(
+            "List the Qt test function names available inside a test binary "
+            "by running it with the -functions flag. Use the result to populate "
+            "test_cases in add_tests for targeted re-runs."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Test binary name."},
+                "build_dir": {
+                    "type": "string",
+                    "description": "Build directory containing the binary.",
+                },
+                "subdir": {
+                    "type": "string",
+                    "description": "Test subdirectory (default: fast_running).",
+                    "default": "fast_running",
+                },
+            },
+            "required": ["name", "build_dir"],
+        },
+    ),
+    Tool(
         name="list_available_tests",
         description=(
             "Discover test binary names available in a build directory by reading "
@@ -448,6 +472,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 result = await asyncio.to_thread(_data_migrate_playlist, arguments["name"])
             case "migrate_all_playlists":
                 result = await asyncio.to_thread(_data_migrate_all_playlists)
+            case "get_test_cases":
+                result = await _data_get_test_cases(
+                    arguments["name"],
+                    arguments["build_dir"],
+                    arguments.get("subdir", "fast_running"),
+                )
             case "list_available_tests":
                 result = await asyncio.to_thread(
                     _data_list_available_tests,
