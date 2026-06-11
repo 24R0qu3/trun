@@ -448,3 +448,29 @@ async def test_get_test_cases_empty_output(tmp_path):
     build_dir = _make_functions_binary(tmp_path, [])
     result = await _data_get_test_cases("my_test", build_dir)
     assert result["test_cases"] == []
+
+
+# ── run_single_test (via _data_run_tests with inline TestEntry) ───────────────
+
+
+async def test_run_single_pass(tmp_path):
+    binary = _make_pytest_file(tmp_path, "def test_it(): pass\n")
+    log = tmp_path / "test.log"
+    entry = TestEntry(
+        name=binary, subdir="fast_running", build_dir=None, group="single", executor="pytest"
+    )
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["passed"] == 1
+    assert result["failed"] == 0
+    assert result["results"][0]["group"] == "single"
+
+
+async def test_run_single_fail(tmp_path):
+    binary = _make_pytest_file(tmp_path, "def test_it(): assert False\n")
+    log = tmp_path / "test.log"
+    entry = TestEntry(
+        name=binary, subdir="fast_running", build_dir=None, group="single", executor="pytest"
+    )
+    result = await _data_run_tests([entry], log_file=log)
+    assert result["failed"] == 1
+    assert result["passed"] == 0

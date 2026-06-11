@@ -12,6 +12,7 @@ from rich.console import Console
 from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR
 from .executor import list_executors
 from .log_analysis import aggregate_failures, filter_log_lines, parse_log
+from .models import TestEntry
 from .playlist import (
     _data_add_tests,
     _data_create_playlist,
@@ -266,6 +267,41 @@ _TOOLS = [
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
+        name="run_single_test",
+        description=(
+            "Run a single test binary without needing a playlist. "
+            "Returns the same result shape as run_tests. "
+            "Use for quick one-shot re-runs after a fix."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Test binary name."},
+                "build_dir": {
+                    "type": "string",
+                    "description": "Build directory containing the binary.",
+                },
+                "subdir": {
+                    "type": "string",
+                    "description": "Test subdirectory (default: fast_running).",
+                    "default": "fast_running",
+                },
+                "executor": {
+                    "type": "string",
+                    "description": "Executor to use (default: gdb).",
+                    "enum": ["gdb", "direct", "valgrind", "pytest"],
+                    "default": "gdb",
+                },
+                "test_cases": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Qt test function names to run. Omit to run all.",
+                },
+            },
+            "required": ["name", "build_dir"],
+        },
+    ),
+    Tool(
         name="get_test_cases",
         description=(
             "List the Qt test function names available inside a test binary "
@@ -472,6 +508,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 result = await asyncio.to_thread(_data_migrate_playlist, arguments["name"])
             case "migrate_all_playlists":
                 result = await asyncio.to_thread(_data_migrate_all_playlists)
+            case "run_single_test":
+                entry = TestEntry(
+                    name=arguments["name"],
+                    subdir=arguments.get("subdir", "fast_running"),
+                    build_dir=arguments["build_dir"],
+                    group="single",
+                    executor=arguments.get("executor", "gdb"),
+                    test_cases=arguments.get("test_cases", []),
+                )
+                result = await _data_run_tests([entry])
             case "get_test_cases":
                 result = await _data_get_test_cases(
                     arguments["name"],
