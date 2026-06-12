@@ -124,6 +124,17 @@ def parse_log(log_text: str) -> dict:
     }
 
 
+def _first_user_frame_location(lines: list[str]) -> str | None:
+    for line in lines:
+        if not _is_user_frame(line):
+            continue
+        m = re.search(r" at (.+):(\d+)\s*$", line.rstrip())
+        if m:
+            filename = m.group(1).rsplit("/", 1)[-1]
+            return f"{filename}:{m.group(2)}"
+    return None
+
+
 def get_error_hint(section_lines: list[str], status: str) -> str | None:
     if status == "PASS":
         return None
@@ -137,10 +148,10 @@ def get_error_hint(section_lines: list[str], status: str) -> str | None:
             assertion = m.group(1)
         if _QT_FAIL_RE.match(line) and qt_fail is None:
             qt_fail = line.strip()[:120]
-    if signal and assertion:
-        return f"{signal}: {assertion}"
     if signal:
-        return signal
+        base = f"{signal}: {assertion}" if assertion else signal
+        frame = _first_user_frame_location(section_lines)
+        return f"{base} @ {frame}" if frame else base
     if qt_fail:
         return qt_fail
     if assertion:

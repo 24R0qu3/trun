@@ -20,6 +20,7 @@ from trun.runner import _data_run_tests
 
 
 def _make_pytest_file(tmp_path, body: str) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     script = tmp_path / "test_script.py"
     script.write_text(body)
     return str(script)
@@ -40,11 +41,8 @@ def _pytest_entry(binary: str, name_override: str | None = None) -> TestEntry:
 
 async def test_stop_on_first_failure_stops_after_first_fail(tmp_path):
     pass_bin = _make_pytest_file(tmp_path / "p", "def test_it(): pass\n")
-    (tmp_path / "p").mkdir(exist_ok=True)
     fail_bin = _make_pytest_file(tmp_path / "f", "def test_it(): assert False\n")
-    (tmp_path / "f").mkdir(exist_ok=True)
     pass_bin2 = _make_pytest_file(tmp_path / "p2", "def test_it(): pass\n")
-    (tmp_path / "p2").mkdir(exist_ok=True)
 
     log = tmp_path / "test.log"
     result = await _data_run_tests(
@@ -58,8 +56,6 @@ async def test_stop_on_first_failure_stops_after_first_fail(tmp_path):
 
 
 async def test_stop_on_first_failure_false_runs_all(tmp_path):
-    (tmp_path / "f1").mkdir()
-    (tmp_path / "f2").mkdir()
     fail1 = _make_pytest_file(tmp_path / "f1", "def test_it(): assert False\n")
     fail2 = _make_pytest_file(tmp_path / "f2", "def test_it(): assert False\n")
 
@@ -75,8 +71,6 @@ async def test_stop_on_first_failure_false_runs_all(tmp_path):
 
 
 async def test_stop_on_first_failure_all_pass_no_stop(tmp_path):
-    (tmp_path / "p1").mkdir()
-    (tmp_path / "p2").mkdir()
     pass1 = _make_pytest_file(tmp_path / "p1", "def test_it(): pass\n")
     pass2 = _make_pytest_file(tmp_path / "p2", "def test_it(): pass\n")
 
@@ -91,8 +85,6 @@ async def test_stop_on_first_failure_all_pass_no_stop(tmp_path):
 
 
 async def test_stop_on_first_failure_stops_across_rounds(tmp_path):
-    (tmp_path / "p").mkdir()
-    (tmp_path / "f").mkdir()
     pass_bin = _make_pytest_file(tmp_path / "p", "def test_it(): pass\n")
     fail_bin = _make_pytest_file(tmp_path / "f", "def test_it(): assert False\n")
 
@@ -180,7 +172,6 @@ def test_get_error_hint_frame_format_is_compact():
 
 
 async def test_append_false_clears_log(tmp_path):
-    (tmp_path / "p").mkdir()
     pass_bin = _make_pytest_file(tmp_path / "p", "def test_it(): pass\n")
     log = tmp_path / "test.log"
 
@@ -195,8 +186,6 @@ async def test_append_false_clears_log(tmp_path):
 
 
 async def test_append_true_accumulates_log(tmp_path):
-    (tmp_path / "p").mkdir()
-    (tmp_path / "f").mkdir()
     pass_bin = _make_pytest_file(tmp_path / "p", "def test_it(): pass\n")
     fail_bin = _make_pytest_file(tmp_path / "f", "def test_it(): assert False\n")
     log = tmp_path / "test.log"
@@ -211,7 +200,6 @@ async def test_append_true_accumulates_log(tmp_path):
 
 
 async def test_append_continues_round_numbering(tmp_path):
-    (tmp_path / "p").mkdir()
     pass_bin = _make_pytest_file(tmp_path / "p", "def test_it(): pass\n")
     log = tmp_path / "test.log"
 
@@ -226,7 +214,6 @@ async def test_append_continues_round_numbering(tmp_path):
 
 
 async def test_append_analyze_shows_combined_failure_rate(tmp_path):
-    (tmp_path / "f").mkdir()
     fail_bin = _make_pytest_file(tmp_path / "f", "def test_it(): assert False\n")
     log = tmp_path / "test.log"
 

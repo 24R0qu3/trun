@@ -98,6 +98,32 @@ _TOOLS = [
                     ),
                     "enum": ["gdb", "direct", "valgrind", "pytest"],
                 },
+                "stop_on_first_failure": {
+                    "type": "boolean",
+                    "description": (
+                        "Stop the run immediately after the first FAIL/CRASH/TIMEOUT. "
+                        "Useful for crash reproduction — no need to run all repetitions."
+                    ),
+                    "default": False,
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": (
+                        "Append to the existing log instead of clearing it. "
+                        "Round numbering continues from the last logged round so "
+                        "analyze_last_run reports combined failure rates across runs."
+                    ),
+                    "default": False,
+                },
+                "only_tests": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Run only the listed test names from the playlist. "
+                        "Exact match on the test binary name. "
+                        "Omit to run all tests."
+                    ),
+                },
             },
             "required": [],
         },
@@ -363,6 +389,31 @@ _TOOLS = [
                     "description": "Override executor for all tests (gdb/direct/valgrind/pytest).",
                     "enum": ["gdb", "direct", "valgrind", "pytest"],
                 },
+                "stop_on_first_failure": {
+                    "type": "boolean",
+                    "description": (
+                        "Stop immediately after the first FAIL/CRASH/TIMEOUT. "
+                        "Useful for crash reproduction — no need to run all repetitions."
+                    ),
+                    "default": False,
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": (
+                        "Append to the existing log instead of clearing it. "
+                        "Round numbering continues so failure rates are correct."
+                    ),
+                    "default": False,
+                },
+                "only_tests": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Run only the listed test names from the playlist. "
+                        "Exact match on the test binary name. "
+                        "Omit to run all tests."
+                    ),
+                },
             },
             "required": [],
         },
@@ -520,6 +571,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 else:
                     build_dir = arguments.get("build_dir", DEFAULT_BUILD)
                     entries = await asyncio.to_thread(_data_load_builtin, build_dir)
+                if only_tests := arguments.get("only_tests"):
+                    only_set = set(only_tests)
+                    entries = [e for e in entries if e.name in only_set]
+                    if not entries:
+                        result = {"error": f"No matching tests found for only_tests={only_tests}"}
+                        return [TextContent(type="text", text=json.dumps(result))]
                 repeat = arguments.get("repeat", 1)
                 ctx = server.request_context
                 token = ctx.meta.progressToken if ctx.meta else None
@@ -532,6 +589,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     shuffle=arguments.get("shuffle", False),
                     executor_override=arguments.get("executor"),
                     on_result=on_result,
+                    stop_on_first_failure=arguments.get("stop_on_first_failure", False),
+                    append=arguments.get("append", False),
                 )
                 MAX_RESULT_ENTRIES = 500
                 entries_list = result.get("results", [])
@@ -568,6 +627,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 else:
                     build_dir = arguments.get("build_dir", DEFAULT_BUILD)
                     entries = await asyncio.to_thread(_data_load_builtin, build_dir)
+                if only_tests := arguments.get("only_tests"):
+                    only_set = set(only_tests)
+                    entries = [e for e in entries if e.name in only_set]
+                    if not entries:
+                        result = {"error": f"No matching tests found for only_tests={only_tests}"}
+                        return [TextContent(type="text", text=json.dumps(result))]
                 repeat = arguments.get("repeat", 1)
                 ctx = server.request_context
                 token = ctx.meta.progressToken if ctx.meta else None
@@ -580,6 +645,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     shuffle=arguments.get("shuffle", False),
                     executor_override=arguments.get("executor"),
                     on_result=on_result,
+                    stop_on_first_failure=arguments.get("stop_on_first_failure", False),
+                    append=arguments.get("append", False),
                 )
                 result = {
                     "passed": run_result["passed"],

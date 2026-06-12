@@ -12,6 +12,7 @@ from .log_analysis import get_error_hint
 from .models import RunResult, TestEntry, TestResult
 
 _CRASH_SIGNAL_RE = re.compile(r"received signal (SIG\w+)")
+_LOG_ROUND_RE = re.compile(r"^=== \[round (\d+)\]", re.MULTILINE)
 _MAX_OUTPUT_LINES = 300
 _GDB_NOISE_RE = re.compile(
     r"^\[(?:New Thread 0x|Detaching after (?:fork|vfork) from (?:child|parent) process )"
@@ -203,18 +204,29 @@ async def _data_run_tests(
     executor_override: str | None = None,
     log_file: Path | None = None,
     on_result: Callable[[TestResult, int, int], Awaitable[None]] | None = None,
+    stop_on_first_failure: bool = False,
+    append: bool = False,
 ) -> dict:
     if log_file is None:
         log_file = LOG_FILE
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    log_file.write_text("")
+
+    round_offset = 0
+    if append and log_file.exists():
+        existing = log_file.read_text()
+        rounds = [int(m.group(1)) for m in _LOG_ROUND_RE.finditer(existing)]
+        if rounds:
+            round_offset = max(rounds)
+    else:
+        log_file.write_text("")
 
     run_result = RunResult()
     total_start = time.monotonic()
     total = repeat * len(entries)
     done = 0
+    stopped_early = False
 
-    for round_num in range(1, repeat + 1):
+    for round_num in range(1 + round_offset, repeat + 1 + round_offset):
         round_entries = list(entries)
         if shuffle:
             import random
@@ -251,10 +263,15 @@ async def _data_run_tests(
             done += 1
             if on_result:
                 await on_result(result, done, total)
+            if stop_on_first_failure and result.status not in ("PASS", "SKIP"):
+                stopped_early = True
+                break
+        if stopped_early:
+            break
 
     run_result.total_secs = int(time.monotonic() - total_start)
 
-    return {
+    out: dict = {
         "results": [
             {
                 "name": r.name,
@@ -273,3 +290,6 @@ async def _data_run_tests(
         "skipped": run_result.skipped,
         "log_file": str(log_file),
     }
+    if stopped_early:
+        out["stopped_early"] = True
+    return out
