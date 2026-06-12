@@ -476,6 +476,62 @@ async def test_run_single_fail(tmp_path):
     assert result["passed"] == 0
 
 
+# ── on_result progress callback ───────────────────────────────────────────────
+
+
+async def test_on_result_called_for_each_test(tmp_path):
+    calls = []
+
+    async def cb(result, done, total):
+        calls.append((result.name, done, total))
+
+    entries = [
+        TestEntry(name=f"test_{i}", subdir="fast_running", build_dir="/no/such/dir", group="g")
+        for i in range(3)
+    ]
+    log = tmp_path / "test.log"
+    await _data_run_tests(entries, log_file=log, on_result=cb)
+    assert len(calls) == 3
+
+
+async def test_on_result_done_and_total_counts(tmp_path):
+    calls = []
+
+    async def cb(result, done, total):
+        calls.append((done, total))
+
+    entries = [
+        TestEntry(name=f"test_{i}", subdir="fast_running", build_dir="/no/such/dir", group="g")
+        for i in range(3)
+    ]
+    log = tmp_path / "test.log"
+    await _data_run_tests(entries, log_file=log, on_result=cb)
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+async def test_on_result_counts_with_repeat(tmp_path):
+    calls = []
+
+    async def cb(result, done, total):
+        calls.append((done, total))
+
+    entries = [
+        TestEntry(name=f"test_{i}", subdir="fast_running", build_dir="/no/such/dir", group="g")
+        for i in range(2)
+    ]
+    log = tmp_path / "test.log"
+    await _data_run_tests(entries, repeat=2, log_file=log, on_result=cb)
+    assert len(calls) == 4
+    assert calls[-1] == (4, 4)
+
+
+async def test_on_result_not_required(tmp_path):
+    entries = [TestEntry(name="t", subdir="fast_running", build_dir="/no/such/dir", group="g")]
+    log = tmp_path / "test.log"
+    result = await _data_run_tests(entries, log_file=log)
+    assert result["failed"] == 1
+
+
 # ── run_and_analyze (logic layer) ─────────────────────────────────────────────
 
 
