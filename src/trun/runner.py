@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from .config import LOG_FILE
@@ -202,7 +202,7 @@ async def _data_run_tests(
     shuffle: bool = False,
     executor_override: str | None = None,
     log_file: Path | None = None,
-    on_result: Callable[[TestResult], None] | None = None,
+    on_result: Callable[[TestResult, int, int], Awaitable[None]] | None = None,
 ) -> dict:
     if log_file is None:
         log_file = LOG_FILE
@@ -211,6 +211,8 @@ async def _data_run_tests(
 
     run_result = RunResult()
     total_start = time.monotonic()
+    total = repeat * len(entries)
+    done = 0
 
     for round_num in range(1, repeat + 1):
         round_entries = list(entries)
@@ -233,8 +235,9 @@ async def _data_run_tests(
                 )
                 run_result.results.append(result)
                 run_result.skipped += 1
+                done += 1
                 if on_result:
-                    on_result(result)
+                    await on_result(result, done, total)
                 raise
             result.predecessor = prev_name
             prev_name = entry.name
@@ -245,8 +248,9 @@ async def _data_run_tests(
                 run_result.skipped += 1
             else:  # FAIL, CRASH, TIMEOUT
                 run_result.failed += 1
+            done += 1
             if on_result:
-                on_result(result)
+                await on_result(result, done, total)
 
     run_result.total_secs = int(time.monotonic() - total_start)
 

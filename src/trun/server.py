@@ -34,6 +34,29 @@ console = Console(stderr=True)
 
 server = Server("trun")
 
+
+def _make_progress_cb(session, token: str | int, total: int):
+    passed = 0
+    failed = 0
+
+    async def on_result(result, done, _total):
+        nonlocal passed, failed
+        if result.status == "PASS":
+            passed += 1
+        elif result.status not in ("SKIP", "INTR"):
+            failed += 1
+        dur = f"{result.duration_secs:.0f}s" if result.duration_secs is not None else "?"
+        if result.status == "PASS":
+            icon = "✓"
+        elif result.status in ("SKIP", "INTR"):
+            icon = "~"
+        else:
+            icon = "✗"
+        msg = f"{icon} [{done}/{total}] {result.name} {result.status} {dur} | ✓{passed} ✗{failed}"
+        await session.send_progress_notification(token, done, total, message=msg)
+
+    return on_result
+
 _TOOLS = [
     Tool(
         name="run_tests",
@@ -497,11 +520,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 else:
                     build_dir = arguments.get("build_dir", DEFAULT_BUILD)
                     entries = await asyncio.to_thread(_data_load_builtin, build_dir)
+                repeat = arguments.get("repeat", 1)
+                ctx = server.request_context
+                token = ctx.meta.progressToken if ctx.meta else None
+                on_result = (
+                    _make_progress_cb(ctx.session, token, len(entries) * repeat) if token else None
+                )
                 result = await _data_run_tests(
                     entries,
-                    repeat=arguments.get("repeat", 1),
+                    repeat=repeat,
                     shuffle=arguments.get("shuffle", False),
                     executor_override=arguments.get("executor"),
+                    on_result=on_result,
                 )
                 MAX_RESULT_ENTRIES = 500
                 entries_list = result.get("results", [])
@@ -538,11 +568,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 else:
                     build_dir = arguments.get("build_dir", DEFAULT_BUILD)
                     entries = await asyncio.to_thread(_data_load_builtin, build_dir)
+                repeat = arguments.get("repeat", 1)
+                ctx = server.request_context
+                token = ctx.meta.progressToken if ctx.meta else None
+                on_result = (
+                    _make_progress_cb(ctx.session, token, len(entries) * repeat) if token else None
+                )
                 run_result = await _data_run_tests(
                     entries,
-                    repeat=arguments.get("repeat", 1),
+                    repeat=repeat,
                     shuffle=arguments.get("shuffle", False),
                     executor_override=arguments.get("executor"),
+                    on_result=on_result,
                 )
                 result = {
                     "passed": run_result["passed"],
@@ -646,7 +683,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     executor=arguments.get("executor", "gdb"),
                     test_cases=arguments.get("test_cases", []),
                 )
-                result = await _data_run_tests([entry])
+                ctx = server.request_context
+                token = ctx.meta.progressToken if ctx.meta else None
+                on_result = _make_progress_cb(ctx.session, token, 1) if token else None
+                result = await _data_run_tests([entry], on_result=on_result)
                 await asyncio.to_thread(_append_run_history, None, result)
             case "get_test_cases":
                 result = await _data_get_test_cases(
