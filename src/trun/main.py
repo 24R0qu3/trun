@@ -79,7 +79,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     results_so_far: list = []
     t_start = time.monotonic()
 
-    def on_result(r):
+    async def on_result(r, done, total):
         results_so_far.append(r)
         status_style = {
             "PASS": "green",
