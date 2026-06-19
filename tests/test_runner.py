@@ -8,6 +8,7 @@ from trun.executor import get_executor, list_executors
 from trun.models import TestEntry
 from trun.runner import (
     _MAX_OUTPUT_LINES,
+    _data_build,
     _data_get_test_cases,
     _data_run_tests,
     _filter_gdb_noise,
@@ -549,6 +550,44 @@ async def test_run_and_analyze_shape_pass(tmp_path):
     aggregated = aggregate_failures(failures, analysis["summary"].get("total_rounds", 1))
     assert run_result["passed"] == 1
     assert aggregated == []
+
+
+# ── _data_build ───────────────────────────────────────────────────────────────
+
+
+async def test_data_build_pass():
+    result = await _data_build(cwd=None, cmd="true")
+    assert result["status"] == "PASS"
+    assert result["duration_secs"] >= 0
+
+
+async def test_data_build_fail():
+    result = await _data_build(cwd=None, cmd="false")
+    assert result["status"] == "FAIL"
+
+
+async def test_data_build_timeout():
+    result = await _data_build(cwd=None, cmd="sleep 60", timeout=1)
+    assert result["status"] == "FAIL"
+    assert "timed out" in result["output"].lower()
+
+
+async def test_data_build_invalid_cmd():
+    result = await _data_build(cwd=None, cmd="__no_such_binary_xyz__")
+    assert result["status"] == "FAIL"
+    assert "output" in result
+
+
+async def test_data_build_captures_output(tmp_path):
+    result = await _data_build(cwd=str(tmp_path), cmd="echo hello")
+    assert result["status"] == "PASS"
+    assert "hello" in result["output"]
+
+
+async def test_data_build_uses_cwd(tmp_path):
+    result = await _data_build(cwd=str(tmp_path), cmd="pwd")
+    assert result["status"] == "PASS"
+    assert str(tmp_path) in result["output"]
 
 
 async def test_run_and_analyze_shape_fail(tmp_path):
