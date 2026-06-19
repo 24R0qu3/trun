@@ -402,12 +402,15 @@ def test_truncate_output_at_limit():
     assert _truncate_output(text, max_lines=3) == text
 
 
-def test_truncate_output_over_limit():
-    text = "\n".join(f"line{i}" for i in range(1, 10))
-    result = _truncate_output(text, max_lines=5)
-    assert "truncated" in result
-    assert "[4 lines truncated]" in result
-    assert len(result.splitlines()) == 6
+def test_truncate_output_keeps_head_and_tail():
+    # backtrace lives at the END of gdb output — truncation must keep the tail
+    text = "\n".join(f"line{i}" for i in range(20))  # line0 .. line19
+    result = _truncate_output(text, max_lines=10, tail_lines=4)
+    assert "line0" in result  # head kept
+    assert "line19" in result  # tail kept (this is where bt lands)
+    assert "line16" in result
+    assert "line10" not in result  # middle dropped
+    assert "[10 lines truncated]" in result
 
 
 def test_truncate_output_default_limit():
