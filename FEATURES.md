@@ -34,7 +34,10 @@
 - Build test binaries from stored or explicit command (`build_tests`)
 - Playlist mode (all groups) and explicit mode (`build_dir` + `cmd`)
 - Skips pytest groups automatically in `build_tests`
-- Build progress visible in output (ninja step count)
+- Live build progress: compact `[N/Total]` ninja step counter via MCP progress notifications
+  (same minimal style as the test-run stream; raw output stays buffered, not streamed)
+- `rebuild` — clear the stale CMake cache (`CMakeCache.txt` + `CMakeFiles/`), then configure +
+  build in one call (`clean=cache|none`)
 
 ### Targeted test cases
 - List available Qt test functions inside a binary (`get_test_cases`)
@@ -53,10 +56,5 @@
 
 ## Planned / Ideas
 
-### Build progress
-- Stream build output line-by-line via MCP progress notifications (currently only final output returned)
-- Show `[N/Total]` ninja progress in real time during `build_tests`
-
-### Rebuild
-- `rebuild` tool or flag: wipe and re-run `configure_build` + `build_tests` in one call
-- Useful when CMake cache is stale or cmake flags changed
+_None open._ (Full-tree wipe for `rebuild` was intentionally not built — cache-clean covers the
+stale-cache / changed-flags case; add a `clean=full` option only if a real need appears.)

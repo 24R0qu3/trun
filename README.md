@@ -251,7 +251,12 @@ the client passes a progress token.
 | `set_pipeline` | Store `build_cmd` (+ optional `configure_cmd`) on a playlist group. |
 | `configure_build` | Run the configure step — per-group `configure_cmd`, or explicit `build_dir`+`cmd`. |
 | `build_tests` | Build test binaries — per-group `build_cmd` (skips pytest groups), or explicit `build_dir`+`cmd`. |
+| `rebuild` | Clear the stale CMake cache, then configure + build in one call (`clean=cache\|none`). |
 | `list_executors` | List execution modes and timeouts. |
+
+`configure_build` / `build_tests` / `rebuild` emit live build progress as a compact `[N/Total]`
+ninja step counter (same minimal style as the test-run stream — raw compiler output is **not**
+streamed, only returned at the end).
 
 ### Agent playbook
 

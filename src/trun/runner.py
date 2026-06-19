@@ -182,7 +182,23 @@ async def _run_single(
     )
 
 
-async def _data_build(cwd: str | None, cmd: str, timeout: int = 600) -> dict:
+_NINJA_PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)")
+
+
+def parse_ninja_progress(line: str) -> tuple[int, int, str] | None:
+    """Parse a ninja `[N/Total] target` step line; None for any other line."""
+    m = _NINJA_PROGRESS_RE.match(line.strip())
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), m.group(3).strip()
+
+
+async def _data_build(
+    cwd: str | None,
+    cmd: str,
+    timeout: int = 600,
+    on_progress: Callable[[int, int, str], Awaitable[None]] | None = None,
+) -> dict:
     t_start = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -191,29 +207,49 @@ async def _data_build(cwd: str | None, cmd: str, timeout: int = 600) -> dict:
             stderr=asyncio.subprocess.STDOUT,
             cwd=cwd,
         )
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            exit_code = proc.returncode
-            timed_out = False
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
-            stdout = b""
-            exit_code = 124
-            timed_out = True
     except Exception as e:
         elapsed = int(time.monotonic() - t_start)
         return {"status": "FAIL", "duration_secs": elapsed, "output": str(e)}
 
-    elapsed = int(time.monotonic() - t_start)
-    output = _truncate_output(stdout.decode(errors="replace"))
+    # Read line-by-line so progress can be reported live, but only ninja step lines are
+    # forwarded to on_progress — raw build output stays buffered and is returned at the end.
+    deadline = t_start + timeout
+    lines: list[str] = []
+    timed_out = False
+    assert proc.stdout is not None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            raw = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+        except asyncio.TimeoutError:
+            timed_out = True
+            break
+        if not raw:
+            break  # EOF
+        line = raw.decode(errors="replace").rstrip("\n")
+        lines.append(line)
+        if on_progress and (p := parse_ninja_progress(line)):
+            await on_progress(*p)
+
     if timed_out:
-        out = f"Build timed out after {timeout}s\n{output}"
-        return {"status": "FAIL", "duration_secs": elapsed, "output": out}
-    status = "PASS" if exit_code == 0 else "FAIL"
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    await proc.wait()
+
+    elapsed = int(time.monotonic() - t_start)
+    output = _truncate_output("\n".join(lines))
+    if timed_out:
+        return {
+            "status": "FAIL",
+            "duration_secs": elapsed,
+            "output": f"Build timed out after {timeout}s\n{output}",
+        }
+    status = "PASS" if proc.returncode == 0 else "FAIL"
     return {"status": status, "duration_secs": elapsed, "output": output}
 
 

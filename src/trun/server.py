@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -103,6 +104,152 @@ def _make_progress_cb(session, token: str | int, total: int):
         await session.send_progress_notification(token, done, total, message=msg)
 
     return on_result
+
+
+def _make_build_progress_cb(session, token: str | int):
+    async def on_progress(n: int, total: int, target: str):
+        await session.send_progress_notification(
+            token, n, total, message=f"[{n}/{total}] {target[:60]}"
+        )
+
+    return on_progress
+
+
+def _current_build_cb():
+    try:
+        ctx = server.request_context
+    except LookupError:  # no active MCP request (e.g. direct/unit call) → no progress
+        return None
+    token = ctx.meta.progressToken if ctx.meta else None
+    return _make_build_progress_cb(ctx.session, token) if token else None
+
+
+def _clean_cmake_cache(build_dir: str) -> list[str]:
+    removed: list[str] = []
+    d = Path(build_dir)
+    cache = d / "CMakeCache.txt"
+    cfiles = d / "CMakeFiles"
+    if cache.is_file():
+        cache.unlink()
+        removed.append(str(cache))
+    if cfiles.is_dir():
+        shutil.rmtree(cfiles, ignore_errors=True)
+        removed.append(str(cfiles))
+    return removed
+
+
+async def _do_configure(arguments: dict, on_progress=None) -> dict:
+    timeout = arguments.get("timeout", 600)
+    build_dir = arguments.get("build_dir")
+    if build_dir:
+        cmd = arguments.get("cmd")
+        if not cmd:
+            return {"error": "Provide cmd when using explicit build_dir"}
+        r = await _data_build(cwd=None, cmd=cmd, timeout=timeout, on_progress=on_progress)
+        return {
+            "results": [{"build_dir": build_dir, **r}],
+            "total": 1,
+            "failed": int(r["status"] == "FAIL"),
+        }
+    if playlist_name := arguments.get("playlist"):
+        groups = await asyncio.to_thread(_data_get_groups, playlist_name)
+        if isinstance(groups, dict):
+            return groups
+        group_filter = arguments.get("group")
+        results = []
+        for grp in groups:
+            if group_filter and grp["name"] != group_filter:
+                continue
+            configure_cmd = grp.get("configure_cmd")
+            if not configure_cmd:
+                continue
+            r = await _data_build(
+                cwd=None, cmd=configure_cmd, timeout=timeout, on_progress=on_progress
+            )
+            results.append({"group": grp["name"], "build_dir": grp.get("build"), **r})
+        return {
+            "results": results,
+            "total": len(results),
+            "failed": sum(1 for r in results if r["status"] == "FAIL"),
+        }
+    return {"error": "Provide playlist or build_dir + cmd"}
+
+
+async def _do_build(arguments: dict, on_progress=None) -> dict:
+    timeout = arguments.get("timeout", 600)
+    build_dir = arguments.get("build_dir")
+    cmd_override = arguments.get("cmd")
+    if build_dir:
+        if not Path(build_dir).is_dir():
+            return {"error": f"Build dir not found: {build_dir} — run configure_build first"}
+        cmd = cmd_override or "cmake --build ."
+        r = await _data_build(cwd=build_dir, cmd=cmd, timeout=timeout, on_progress=on_progress)
+        return {
+            "builds": [{"build_dir": build_dir, **r}],
+            "total": 1,
+            "failed": int(r["status"] == "FAIL"),
+        }
+    if playlist_name := arguments.get("playlist"):
+        groups = await asyncio.to_thread(_data_get_groups, playlist_name)
+        if isinstance(groups, dict):
+            return groups
+        builds = []
+        for grp in groups:
+            if grp.get("executor") == "pytest":
+                continue
+            bd = grp.get("build")
+            if bd and not Path(bd).is_dir():
+                builds.append({
+                    "group": grp["name"],
+                    "build_dir": bd,
+                    "status": "FAIL",
+                    "duration_secs": 0,
+                    "output": f"Build dir not found: {bd} — run configure_build first",
+                })
+                continue
+            cmd = cmd_override or grp.get("build_cmd") or "cmake --build ."
+            r = await _data_build(cwd=bd, cmd=cmd, timeout=timeout, on_progress=on_progress)
+            builds.append({"group": grp["name"], "build_dir": bd, **r})
+        return {
+            "builds": builds,
+            "total": len(builds),
+            "failed": sum(1 for b in builds if b["status"] == "FAIL"),
+        }
+    return {"error": "Provide playlist or build_dir"}
+
+
+async def _do_rebuild(arguments: dict, on_progress=None) -> dict:
+    clean = arguments.get("clean", "cache")
+    build_dir = arguments.get("build_dir")
+    playlist = arguments.get("playlist")
+    if not build_dir and not playlist:
+        return {"error": "Provide playlist or build_dir"}
+
+    if build_dir:
+        targets = [build_dir]
+    else:
+        groups = await asyncio.to_thread(_data_get_groups, playlist)
+        if isinstance(groups, dict):
+            return groups
+        targets = [g["build"] for g in groups if g.get("executor") != "pytest" and g.get("build")]
+
+    removed: list[str] = []
+    if clean == "cache":
+        for d in targets:
+            removed += _clean_cmake_cache(d)
+
+    if build_dir:
+        conf_cmd = arguments.get("configure_cmd")
+        configure = (
+            await _do_configure({**arguments, "cmd": conf_cmd}, on_progress)
+            if conf_cmd
+            else {"skipped": "no configure_cmd"}
+        )
+    else:
+        configure = await _do_configure(arguments, on_progress)
+
+    build = await _do_build(arguments, on_progress)
+    return {"clean": clean, "removed_cache": removed, "configure": configure, "build": build}
 
 _TOOLS = [
     Tool(
@@ -686,6 +833,51 @@ _TOOLS = [
             "required": [],
         },
     ),
+    Tool(
+        name="rebuild",
+        description=(
+            "Clear the stale CMake cache, then configure + build in one call. "
+            "Use when the CMake cache is stale or cmake flags changed. "
+            "Playlist mode: per-group configure_cmd/build_cmd (skips pytest groups for the build). "
+            "Explicit mode: build_dir + optional configure_cmd (configure) and cmd (build). "
+            "Build progress streams as a compact [N/Total] ninja step counter."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "playlist": {
+                    "type": "string",
+                    "description": "Named playlist. Provide this or build_dir.",
+                },
+                "build_dir": {
+                    "type": "string",
+                    "description": "Explicit build dir. Provide this or playlist.",
+                },
+                "configure_cmd": {
+                    "type": "string",
+                    "description": "Configure command (explicit mode).",
+                },
+                "cmd": {
+                    "type": "string",
+                    "description": "Build command (explicit mode; default 'cmake --build .').",
+                },
+                "clean": {
+                    "type": "string",
+                    "enum": ["cache", "none"],
+                    "default": "cache",
+                    "description": (
+                        "cache = remove CMakeCache.txt + CMakeFiles/ before configuring; "
+                        "none = skip."
+                    ),
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout per step in seconds (default: 600).",
+                },
+            },
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -888,87 +1080,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments.get("build_dir"),
                 )
             case "configure_build":
-                timeout = arguments.get("timeout", 600)
-                build_dir = arguments.get("build_dir")
-                if build_dir:
-                    cmd = arguments.get("cmd")
-                    if not cmd:
-                        result = {"error": "Provide cmd when using explicit build_dir"}
-                    else:
-                        r = await _data_build(cwd=None, cmd=cmd, timeout=timeout)
-                        failed = int(r["status"] == "FAIL")
-                        result = {
-                            "results": [{"build_dir": build_dir, **r}],
-                            "total": 1,
-                            "failed": failed,
-                        }
-                elif playlist_name := arguments.get("playlist"):
-                    groups = await asyncio.to_thread(_data_get_groups, playlist_name)
-                    if isinstance(groups, dict):
-                        result = groups
-                    else:
-                        group_filter = arguments.get("group")
-                        results = []
-                        for grp in groups:
-                            if group_filter and grp["name"] != group_filter:
-                                continue
-                            configure_cmd = grp.get("configure_cmd")
-                            if not configure_cmd:
-                                continue
-                            r = await _data_build(cwd=None, cmd=configure_cmd, timeout=timeout)
-                            results.append(
-                                {"group": grp["name"], "build_dir": grp.get("build"), **r}
-                            )
-                        failed = sum(1 for r in results if r["status"] == "FAIL")
-                        result = {"results": results, "total": len(results), "failed": failed}
-                else:
-                    result = {"error": "Provide playlist or build_dir + cmd"}
+                result = await _do_configure(arguments, _current_build_cb())
             case "build_tests":
-                timeout = arguments.get("timeout", 600)
-                build_dir = arguments.get("build_dir")
-                cmd_override = arguments.get("cmd")
-                if build_dir:
-                    if not Path(build_dir).is_dir():
-                        err = f"Build dir not found: {build_dir} — run configure_build first"
-                        result = {"error": err}
-                    else:
-                        cmd = cmd_override or "cmake --build ."
-                        r = await _data_build(cwd=build_dir, cmd=cmd, timeout=timeout)
-                        failed = int(r["status"] == "FAIL")
-                        result = {
-                            "builds": [{"build_dir": build_dir, **r}],
-                            "total": 1,
-                            "failed": failed,
-                        }
-                elif playlist_name := arguments.get("playlist"):
-                    groups = await asyncio.to_thread(_data_get_groups, playlist_name)
-                    if isinstance(groups, dict):
-                        result = groups
-                    else:
-                        builds = []
-                        for grp in groups:
-                            if grp.get("executor") == "pytest":
-                                continue
-                            bd = grp.get("build")
-                            if bd and not Path(bd).is_dir():
-                                builds.append({
-                                    "group": grp["name"],
-                                    "build_dir": bd,
-                                    "status": "FAIL",
-                                    "duration_secs": 0,
-                                    "output": (
-                                        f"Build dir not found: {bd}"
-                                        " — run configure_build first"
-                                    ),
-                                })
-                                continue
-                            cmd = cmd_override or grp.get("build_cmd") or "cmake --build ."
-                            r = await _data_build(cwd=bd, cmd=cmd, timeout=timeout)
-                            builds.append({"group": grp["name"], "build_dir": bd, **r})
-                        failed = sum(1 for b in builds if b["status"] == "FAIL")
-                        result = {"builds": builds, "total": len(builds), "failed": failed}
-                else:
-                    result = {"error": "Provide playlist or build_dir"}
+                result = await _do_build(arguments, _current_build_cb())
+            case "rebuild":
+                result = await _do_rebuild(arguments, _current_build_cb())
             case _:
                 result = {"error": f"Unknown tool: {name}"}
     except Exception as e:
