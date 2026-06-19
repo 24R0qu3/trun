@@ -184,6 +184,39 @@ def _data_get_playlist(name: str) -> dict:
     }
 
 
+def _data_get_groups(name: str) -> list[dict] | dict:
+    path = _resolve_playlist_path(name)
+    if not path.exists():
+        return {"error": f"Playlist '{name}' not found"}
+    data = yaml.safe_load(path.read_text()) or {}
+    return data.get("groups", [])
+
+
+def _data_set_pipeline(
+    name: str,
+    group_name: str,
+    build_cmd: str,
+    configure_cmd: str | None = None,
+    build_dir: str | None = None,
+) -> dict:
+    path = _resolve_playlist_path(name)
+    if not path.exists():
+        return {"error": f"Playlist '{name}' not found"}
+    data = yaml.safe_load(path.read_text()) or {"groups": []}
+    groups = data.setdefault("groups", [])
+    grp = next((g for g in groups if g["name"] == group_name), None)
+    if grp is None:
+        if not build_dir:
+            return {"error": f"Group '{group_name}' not found; provide build_dir to create it"}
+        grp = {"name": group_name, "build": build_dir, "executor": "gdb", "tests": []}
+        groups.append(grp)
+    grp["build_cmd"] = build_cmd
+    if configure_cmd is not None:
+        grp["configure_cmd"] = configure_cmd
+    path.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+    return {"message": f"Pipeline set for '{name}' [{group_name}]"}
+
+
 def _data_create_playlist(name: str) -> dict:
     path = _resolve_playlist_path(name)
     if path.exists():

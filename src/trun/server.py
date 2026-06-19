@@ -19,6 +19,7 @@ from .playlist import (
     _data_create_playlist,
     _data_create_playlist_from_dir,
     _data_delete_playlist,
+    _data_get_groups,
     _data_get_playlist,
     _data_list_available_tests,
     _data_list_playlists,
@@ -27,8 +28,9 @@ from .playlist import (
     _data_migrate_all_playlists,
     _data_migrate_playlist,
     _data_remove_tests,
+    _data_set_pipeline,
 )
-from .runner import _data_get_test_cases, _data_run_tests
+from .runner import _data_build, _data_get_test_cases, _data_run_tests
 
 server = Server("trun")
 
@@ -564,6 +566,109 @@ _TOOLS = [
             "required": ["name", "build_dir", "subdir", "group"],
         },
     ),
+    Tool(
+        name="set_pipeline",
+        description=(
+            "Store build pipeline commands in a playlist group. "
+            "Sets build_cmd (how to compile tests) and optionally configure_cmd "
+            "(cmake/qmake setup). "
+            "After this, build_tests and configure_build can run without repeating these commands."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "playlist": {"type": "string"},
+                "group": {"type": "string"},
+                "build_cmd": {
+                    "type": "string",
+                    "description": (
+                        "Build command run in the group's build dir. "
+                        "E.g. 'cmake --build . -j8', 'make -j4', 'ninja', 'cargo build --tests'."
+                    ),
+                },
+                "configure_cmd": {
+                    "type": "string",
+                    "description": (
+                        "Optional configure command "
+                        "(e.g. 'cmake -S /src -B /build -DCMAKE_PREFIX_PATH=/opt/Qt'). "
+                        "Use absolute paths — it runs in the server's working directory."
+                    ),
+                },
+                "build_dir": {
+                    "type": "string",
+                    "description": "Build directory — only needed if the group does not exist yet.",
+                },
+            },
+            "required": ["playlist", "group", "build_cmd"],
+        },
+    ),
+    Tool(
+        name="configure_build",
+        description=(
+            "Run the configure step. "
+            "Playlist mode: reads configure_cmd from each group (skips groups without one); "
+            "command runs in the server's working directory so use absolute paths. "
+            "Explicit mode: provide build_dir and cmd. "
+            "Call once before build_tests when the build directory does not exist yet."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "playlist": {
+                    "type": "string",
+                    "description": "Named playlist (reads configure_cmd per group).",
+                },
+                "group": {
+                    "type": "string",
+                    "description": "Limit to one group (playlist mode).",
+                },
+                "build_dir": {
+                    "type": "string",
+                    "description": "Explicit working directory. Provide this or playlist.",
+                },
+                "cmd": {"type": "string", "description": "Configure command (explicit mode)."},
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default: 600).",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="build_tests",
+        description=(
+            "Build test binaries. "
+            "Playlist mode: reads build_cmd per group (defaults to 'cmake --build .' if not set); "
+            "skips pytest groups; fails if the build dir does not exist "
+            "(run configure_build first). "
+            "Explicit mode: provide build_dir and optional cmd. "
+            "Call before run_tests when sources have changed."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "playlist": {
+                    "type": "string",
+                    "description": "Named playlist; builds all groups.",
+                },
+                "build_dir": {
+                    "type": "string",
+                    "description": "Explicit build directory. Provide this or playlist.",
+                },
+                "cmd": {
+                    "type": "string",
+                    "description": "Build command override (default: 'cmake --build .').",
+                    "default": "cmake --build .",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout per build in seconds (default: 600).",
+                },
+            },
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -756,6 +861,97 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments.get("timeout_fast"),
                     arguments.get("timeout_long"),
                 )
+            case "set_pipeline":
+                result = await asyncio.to_thread(
+                    _data_set_pipeline,
+                    arguments["playlist"],
+                    arguments["group"],
+                    arguments["build_cmd"],
+                    arguments.get("configure_cmd"),
+                    arguments.get("build_dir"),
+                )
+            case "configure_build":
+                timeout = arguments.get("timeout", 600)
+                build_dir = arguments.get("build_dir")
+                if build_dir:
+                    cmd = arguments.get("cmd")
+                    if not cmd:
+                        result = {"error": "Provide cmd when using explicit build_dir"}
+                    else:
+                        r = await _data_build(cwd=None, cmd=cmd, timeout=timeout)
+                        failed = int(r["status"] == "FAIL")
+                        result = {
+                            "results": [{"build_dir": build_dir, **r}],
+                            "total": 1,
+                            "failed": failed,
+                        }
+                elif playlist_name := arguments.get("playlist"):
+                    groups = await asyncio.to_thread(_data_get_groups, playlist_name)
+                    if isinstance(groups, dict):
+                        result = groups
+                    else:
+                        group_filter = arguments.get("group")
+                        results = []
+                        for grp in groups:
+                            if group_filter and grp["name"] != group_filter:
+                                continue
+                            configure_cmd = grp.get("configure_cmd")
+                            if not configure_cmd:
+                                continue
+                            r = await _data_build(cwd=None, cmd=configure_cmd, timeout=timeout)
+                            results.append(
+                                {"group": grp["name"], "build_dir": grp.get("build"), **r}
+                            )
+                        failed = sum(1 for r in results if r["status"] == "FAIL")
+                        result = {"results": results, "total": len(results), "failed": failed}
+                else:
+                    result = {"error": "Provide playlist or build_dir + cmd"}
+            case "build_tests":
+                timeout = arguments.get("timeout", 600)
+                build_dir = arguments.get("build_dir")
+                cmd_override = arguments.get("cmd")
+                if build_dir:
+                    if not Path(build_dir).is_dir():
+                        err = f"Build dir not found: {build_dir} — run configure_build first"
+                        result = {"error": err}
+                    else:
+                        cmd = cmd_override or "cmake --build ."
+                        r = await _data_build(cwd=build_dir, cmd=cmd, timeout=timeout)
+                        failed = int(r["status"] == "FAIL")
+                        result = {
+                            "builds": [{"build_dir": build_dir, **r}],
+                            "total": 1,
+                            "failed": failed,
+                        }
+                elif playlist_name := arguments.get("playlist"):
+                    groups = await asyncio.to_thread(_data_get_groups, playlist_name)
+                    if isinstance(groups, dict):
+                        result = groups
+                    else:
+                        builds = []
+                        for grp in groups:
+                            if grp.get("executor") == "pytest":
+                                continue
+                            bd = grp.get("build")
+                            if bd and not Path(bd).is_dir():
+                                builds.append({
+                                    "group": grp["name"],
+                                    "build_dir": bd,
+                                    "status": "FAIL",
+                                    "duration_secs": 0,
+                                    "output": (
+                                        f"Build dir not found: {bd}"
+                                        " — run configure_build first"
+                                    ),
+                                })
+                                continue
+                            cmd = cmd_override or grp.get("build_cmd") or "cmake --build ."
+                            r = await _data_build(cwd=bd, cmd=cmd, timeout=timeout)
+                            builds.append({"group": grp["name"], "build_dir": bd, **r})
+                        failed = sum(1 for b in builds if b["status"] == "FAIL")
+                        result = {"builds": builds, "total": len(builds), "failed": failed}
+                else:
+                    result = {"error": "Provide playlist or build_dir"}
             case _:
                 result = {"error": f"Unknown tool: {name}"}
     except Exception as e:

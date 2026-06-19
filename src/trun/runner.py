@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import shlex
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -172,6 +173,41 @@ async def _run_single(
         round_num=round_num,
         error_hint=hint,
     )
+
+
+async def _data_build(cwd: str | None, cmd: str, timeout: int = 600) -> dict:
+    t_start = time.monotonic()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *shlex.split(cmd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            exit_code = proc.returncode
+            timed_out = False
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            stdout = b""
+            exit_code = 124
+            timed_out = True
+    except Exception as e:
+        elapsed = int(time.monotonic() - t_start)
+        return {"status": "FAIL", "duration_secs": elapsed, "output": str(e)}
+
+    elapsed = int(time.monotonic() - t_start)
+    output = _truncate_output(stdout.decode(errors="replace"))
+    if timed_out:
+        out = f"Build timed out after {timeout}s\n{output}"
+        return {"status": "FAIL", "duration_secs": elapsed, "output": out}
+    status = "PASS" if exit_code == 0 else "FAIL"
+    return {"status": status, "duration_secs": elapsed, "output": output}
 
 
 async def _data_get_test_cases(name: str, build_dir: str, subdir: str = "fast_running") -> dict:
