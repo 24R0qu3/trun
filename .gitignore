@@ -10,6 +10,7 @@ build/
 *.so
 *.log
 gdb_all_tests_log.txt
+test_data_dir/
 .vscode/
 .idea/
 .claude/
