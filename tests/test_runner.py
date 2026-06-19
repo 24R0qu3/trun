@@ -15,7 +15,33 @@ from trun.runner import (
     _has_crash_in_output,
     _truncate_output,
     fmt_duration,
+    parse_ninja_progress,
 )
+
+
+def test_parse_ninja_progress():
+    assert parse_ninja_progress("[2/10] Building foo.o") == (2, 10, "Building foo.o")
+    assert parse_ninja_progress("[12/12] Linking bar") == (12, 12, "Linking bar")
+    assert parse_ninja_progress("plain line") is None
+    assert parse_ninja_progress("gcc -c foo.c") is None
+
+
+async def test_data_build_progress_only_ninja_lines():
+    calls = []
+
+    async def on_progress(n, total, target):
+        calls.append((n, total, target))
+
+    code = "print('[1/2] Building a'); print('plain output'); print('[2/2] Linking b')"
+    r = await _data_build(cwd=None, cmd=f'python3 -c "{code}"', on_progress=on_progress)
+    assert r["status"] == "PASS"
+    assert calls == [(1, 2, "Building a"), (2, 2, "Linking b")]
+    assert "plain output" in r["output"]  # non-progress lines still in buffered output
+
+
+async def test_data_build_fail_status_streamed():
+    r = await _data_build(cwd=None, cmd='python3 -c "import sys; sys.exit(1)"')
+    assert r["status"] == "FAIL"
 
 
 def test_fmt_duration_seconds():
