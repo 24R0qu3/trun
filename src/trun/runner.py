@@ -16,6 +16,7 @@ from .models import RunResult, TestEntry, TestResult
 _CRASH_SIGNAL_RE = re.compile(r"received signal (SIG\w+)")
 _LOG_ROUND_RE = re.compile(r"^=== \[round (\d+)\]", re.MULTILINE)
 _MAX_OUTPUT_LINES = 300
+_TAIL_OUTPUT_LINES = 100  # GDB prints the backtrace last — always keep the tail
 _GDB_NOISE_RE = re.compile(
     r"^\[(?:New Thread 0x|Detaching after (?:fork|vfork) from (?:child|parent) process )"
 )
@@ -37,12 +38,17 @@ def _filter_gdb_noise(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not _GDB_NOISE_RE.match(line))
 
 
-def _truncate_output(text: str, max_lines: int = _MAX_OUTPUT_LINES) -> str:
+def _truncate_output(
+    text: str, max_lines: int = _MAX_OUTPUT_LINES, tail_lines: int = _TAIL_OUTPUT_LINES
+) -> str:
     lines = text.splitlines()
     if len(lines) <= max_lines:
         return text
     dropped = len(lines) - max_lines
-    return "\n".join(lines[:max_lines]) + f"\n... [{dropped} lines truncated] ..."
+    tail = min(tail_lines, max_lines)
+    head = max_lines - tail
+    kept = lines[:head] + [f"... [{dropped} lines truncated] ..."] + lines[-tail:]
+    return "\n".join(kept)
 
 
 async def _run_single(

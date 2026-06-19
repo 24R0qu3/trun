@@ -87,5 +87,11 @@ def test_load_entries_builtin_returns_list(monkeypatch):
         TestEntry(name="t", subdir="fast_running", build_dir="/b", group="g")
     ]
     monkeypatch.setattr(server_mod, "_data_load_builtin", lambda bd: fake_entries)
-    entries = server_mod._load_entries({})
+    entries = server_mod._load_entries({"build_dir": "/b"})
     assert entries == fake_entries
+
+
+def test_load_entries_builtin_without_build_errors(monkeypatch):
+    monkeypatch.setattr(server_mod, "DEFAULT_BUILD", "")
+    result = server_mod._load_entries({})
+    assert "error" in result

@@ -10,6 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from . import __version__
 from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR
 from .executor import list_executors
 from .playlist import (
@@ -63,7 +64,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         except Exception as e:
             _fail(str(e))
     else:
-        entries = _data_load_builtin(build_dir=args.build or DEFAULT_BUILD)
+        build = args.build or DEFAULT_BUILD
+        if not build:
+            _fail("No build directory. Set TRUN_BUILD_DIR, pass --build DIR, or use --playlist.")
+        entries = _data_load_builtin(build_dir=build)
 
     if not entries:
         _fail("No tests to run.")
@@ -126,6 +130,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         }
 
     _print_summary(result, args.repeat > 1)
+
+    if result["failed"]:
+        raise SystemExit(1)
 
 
 def _print_summary(result: dict, show_round: bool) -> None:
@@ -314,7 +321,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="trun",
         description="Test runner with GDB, valgrind, pytest support and MCP server.",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
 

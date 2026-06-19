@@ -186,6 +186,22 @@ Or manually add the output of `trun mcp --print-config` to `~/.claude.json`.
 | `list_executors` | List execution modes and timeouts |
 | `migrate_playlist` | Convert a single `.ini` playlist to YAML |
 | `migrate_all_playlists` | Convert all `.ini` playlists to YAML |
+| `set_pipeline` | Store `build_cmd` (and optional `configure_cmd`) on a playlist group for later builds |
+| `configure_build` | Run the configure step — per-group `configure_cmd` (playlist mode) or explicit `build_dir`+`cmd` |
+| `build_tests` | Build test binaries — per-group `build_cmd` (playlist mode, skips pytest groups) or explicit `build_dir`+`cmd` |
+
+#### `run_tests` / `run_and_analyze` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `playlist` | — | Named playlist or path; omit for built-in suite |
+| `build_dir` | `$TRUN_BUILD_DIR` | Build dir for the built-in suite |
+| `repeat` | 1 | Number of repetitions |
+| `shuffle` | false | Randomize test order each round |
+| `executor` | — | Override executor for all tests |
+| `only_tests` | — | Run only these test binary names (exact match) |
+| `stop_on_first_failure` | false | Stop after the first FAIL/CRASH/TIMEOUT |
+| `append` | false | Append to the existing log; round numbering continues |
 
 #### `get_last_log` parameters
 
@@ -270,7 +286,9 @@ History is stored in `~/.local/share/trun/run_history.jsonl` (capped at 50 entri
 
 | Environment variable | Description |
 |----------------------|-------------|
-| `TRUN_BUILD_DIR` | Default build directory for the built-in suite |
+| `TRUN_BUILD_DIR` | Default build directory for the built-in suite (required for the built-in suite; the CLI errors if it is unset and neither `--build` nor `--playlist` is given) |
+
+`trun run` exits non-zero when any test fails, so it can gate CI and pre-commit hooks.
 
 Config: `~/.config/trun/`  
 Logs: `~/.local/share/trun/last_run.log`  

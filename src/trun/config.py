@@ -10,7 +10,5 @@ LOG_FILE = DATA_DIR / "last_run.log"
 RUN_HISTORY_FILE = DATA_DIR / "run_history.jsonl"
 MAX_HISTORY_ENTRIES = 50
 
-DEFAULT_BUILD = os.environ.get(
-    "TRUN_BUILD_DIR",
-    "/media/nielsruehr/F2EC62F5EC62B38F/projects/reichhardt/SMC4/ak1/rst_smart_command/build/CC_V1X90-Debug",
-)
+# ponytail: no hardcoded build path — built-in suite needs TRUN_BUILD_DIR or --build/--build_dir.
+DEFAULT_BUILD = os.environ.get("TRUN_BUILD_DIR", "")

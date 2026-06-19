@@ -54,7 +54,14 @@ def _load_entries(arguments: dict) -> list | dict:
             path = named
         entries = _data_load_playlist_file(str(path))
     else:
-        entries = _data_load_builtin(arguments.get("build_dir", DEFAULT_BUILD))
+        build = arguments.get("build_dir") or DEFAULT_BUILD
+        if not build:
+            return {
+                "error": (
+                    "No build directory. Set TRUN_BUILD_DIR, pass build_dir, or use a playlist."
+                )
+            }
+        entries = _data_load_builtin(build)
 
     if only_tests := arguments.get("only_tests"):
         only_set = set(only_tests)
