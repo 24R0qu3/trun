@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
-from rich.console import Console
 
 from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR
 from .executor import list_executors
@@ -30,9 +30,37 @@ from .playlist import (
 )
 from .runner import _data_get_test_cases, _data_run_tests
 
-console = Console(stderr=True)
-
 server = Server("trun")
+
+
+def _load_entries(arguments: dict) -> list | dict:
+    playlist = arguments.get("playlist")
+    if playlist:
+        path = Path(playlist)
+        if not path.exists():
+            named = PLAYLISTS_DIR / f"{playlist}.yaml"
+            if not named.exists():
+                ini_fallback = PLAYLISTS_DIR / f"{playlist}.ini"
+                if ini_fallback.exists():
+                    return {
+                        "error": (
+                            f"Playlist '{playlist}' is still in .ini format. "
+                            f"Use migrate_playlist to convert it first."
+                        )
+                    }
+                return {"error": f"Playlist '{playlist}' not found"}
+            path = named
+        entries = _data_load_playlist_file(str(path))
+    else:
+        entries = _data_load_builtin(arguments.get("build_dir", DEFAULT_BUILD))
+
+    if only_tests := arguments.get("only_tests"):
+        only_set = set(only_tests)
+        entries = [e for e in entries if e.name in only_set]
+        if not entries:
+            return {"error": f"No matching tests found for only_tests={only_tests}"}
+
+    return entries
 
 
 def _make_progress_cb(session, token: str | int, total: int):
@@ -549,41 +577,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         match name:
             case "run_tests":
-                playlist = arguments.get("playlist")
-                if playlist:
-                    path = Path(playlist)
-                    if not path.exists():
-                        named = PLAYLISTS_DIR / f"{playlist}.yaml"
-                        if not named.exists():
-                            ini_fallback = PLAYLISTS_DIR / f"{playlist}.ini"
-                            if ini_fallback.exists():
-                                result: dict = {
-                                    "error": (
-                                        f"Playlist '{playlist}' is still in .ini format. "
-                                        f"Use migrate_playlist to convert it first."
-                                    )
-                                }
-                            else:
-                                result = {"error": f"Playlist '{playlist}' not found"}
-                            return [TextContent(type="text", text=json.dumps(result))]
-                        path = named
-                    entries = await asyncio.to_thread(_data_load_playlist_file, str(path))
-                else:
-                    build_dir = arguments.get("build_dir", DEFAULT_BUILD)
-                    entries = await asyncio.to_thread(_data_load_builtin, build_dir)
-                if only_tests := arguments.get("only_tests"):
-                    only_set = set(only_tests)
-                    entries = [e for e in entries if e.name in only_set]
-                    if not entries:
-                        result = {"error": f"No matching tests found for only_tests={only_tests}"}
-                        return [TextContent(type="text", text=json.dumps(result))]
+                entries = await asyncio.to_thread(_load_entries, arguments)
+                if isinstance(entries, dict):
+                    return [TextContent(type="text", text=json.dumps(entries))]
                 repeat = arguments.get("repeat", 1)
                 ctx = server.request_context
                 token = ctx.meta.progressToken if ctx.meta else None
                 on_result = (
                     _make_progress_cb(ctx.session, token, len(entries) * repeat) if token else None
                 )
-                result = await _data_run_tests(
+                result: dict = await _data_run_tests(
                     entries,
                     repeat=repeat,
                     shuffle=arguments.get("shuffle", False),
@@ -605,34 +608,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     )
                 await asyncio.to_thread(_append_run_history, arguments.get("playlist"), result)
             case "run_and_analyze":
-                playlist = arguments.get("playlist")
-                if playlist:
-                    path = Path(playlist)
-                    if not path.exists():
-                        named = PLAYLISTS_DIR / f"{playlist}.yaml"
-                        if not named.exists():
-                            ini_fallback = PLAYLISTS_DIR / f"{playlist}.ini"
-                            if ini_fallback.exists():
-                                result = {
-                                    "error": (
-                                        f"Playlist '{playlist}' is still in .ini format. "
-                                        f"Use migrate_playlist to convert it first."
-                                    )
-                                }
-                            else:
-                                result = {"error": f"Playlist '{playlist}' not found"}
-                            return [TextContent(type="text", text=json.dumps(result))]
-                        path = named
-                    entries = await asyncio.to_thread(_data_load_playlist_file, str(path))
-                else:
-                    build_dir = arguments.get("build_dir", DEFAULT_BUILD)
-                    entries = await asyncio.to_thread(_data_load_builtin, build_dir)
-                if only_tests := arguments.get("only_tests"):
-                    only_set = set(only_tests)
-                    entries = [e for e in entries if e.name in only_set]
-                    if not entries:
-                        result = {"error": f"No matching tests found for only_tests={only_tests}"}
-                        return [TextContent(type="text", text=json.dumps(result))]
+                entries = await asyncio.to_thread(_load_entries, arguments)
+                if isinstance(entries, dict):
+                    return [TextContent(type="text", text=json.dumps(entries))]
                 repeat = arguments.get("repeat", 1)
                 ctx = server.request_context
                 token = ctx.meta.progressToken if ctx.meta else None
@@ -787,7 +765,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 async def main() -> None:
-    console.print("[dim]Starting trun MCP server...[/dim]")
+    print("Starting trun MCP server...", file=sys.stderr)
     async with stdio_server() as (r, w):
         await server.run(r, w, server.create_initialization_options())
 

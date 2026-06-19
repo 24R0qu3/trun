@@ -12,7 +12,6 @@ import trun.server as server_mod
 from trun.executor import Executor
 from trun.models import TestEntry
 
-
 # ── Executor ABC ──────────────────────────────────────────────────────────────
 
 

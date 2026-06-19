@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 
 @dataclass
-class Executor:
+class Executor(ABC):
     name: str
     description: str
     timeouts: dict[str, int] = field(default_factory=dict)
 
-    def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
-        raise NotImplementedError
+    @abstractmethod
+    def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]: ...
 
     def default_timeout(self, subdir: str) -> int:
         return self.timeouts.get(subdir, self.timeouts.get("default", 180))

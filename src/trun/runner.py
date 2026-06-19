@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -60,7 +61,6 @@ async def _run_single(
     timeout = entry.timeout if entry.timeout is not None else executor.default_timeout(entry.subdir)
 
     if executor_name != "pytest" and not Path(binary).is_file():
-        log_file.parent.mkdir(parents=True, exist_ok=True)
         with log_file.open("a") as f:
             f.write(
                 f"=== [round {round_num}] {entry.name}: FAIL (binary not found: {binary}) ===\n\n"
@@ -104,7 +104,6 @@ async def _run_single(
             await proc.wait()
             elapsed = int(time.monotonic() - t_start)
             tc_info = f" [{', '.join(entry.test_cases)}]" if entry.test_cases else ""
-            log_file.parent.mkdir(parents=True, exist_ok=True)
             with log_file.open("a") as f:
                 f.write(
                     f"=== [round {round_num}] {entry.name}{tc_info}: INTR "
@@ -113,7 +112,6 @@ async def _run_single(
             raise
     except Exception as e:
         elapsed = int(time.monotonic() - t_start)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
         with log_file.open("a") as f:
             f.write(
                 f"=== [round {round_num}] {entry.name}: FAIL "
@@ -158,7 +156,6 @@ async def _run_single(
 
     hint = get_error_hint(output.splitlines(), status) if output else None
 
-    log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("a") as f:
         f.write(log_line)
         if output:
@@ -229,8 +226,6 @@ async def _data_run_tests(
     for round_num in range(1 + round_offset, repeat + 1 + round_offset):
         round_entries = list(entries)
         if shuffle:
-            import random
-
             random.shuffle(round_entries)
 
         prev_name: str | None = None
