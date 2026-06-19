@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from .config import MAX_HISTORY_ENTRIES, RUN_HISTORY_FILE
+from .config import MAX_HISTORY_ENTRIES, RUN_HISTORY_FILE, atomic_write
 
 
 def _append_run_history(playlist_name: str | None, run_result: dict) -> None:
@@ -24,7 +24,7 @@ def _append_run_history(playlist_name: str | None, run_result: dict) -> None:
     lines.append(json.dumps(entry, ensure_ascii=False))
     if len(lines) > MAX_HISTORY_ENTRIES:
         lines = lines[-MAX_HISTORY_ENTRIES:]
-    RUN_HISTORY_FILE.write_text("\n".join(lines) + "\n")
+    atomic_write(RUN_HISTORY_FILE, "\n".join(lines) + "\n")
 
 
 def _get_run_history(

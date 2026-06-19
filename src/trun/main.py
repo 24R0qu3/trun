@@ -11,11 +11,13 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR
+from .config import LOG_FILE, PLAYLISTS_DIR, resolve_build_dir, set_config
 from .executor import list_executors
+from .models import TestEntry
 from .playlist import (
     _data_add_tests,
     _data_create_playlist,
+    _data_create_playlist_from_dir,
     _data_delete_playlist,
     _data_get_playlist,
     _data_list_playlists,
@@ -64,19 +66,47 @@ def cmd_run(args: argparse.Namespace) -> None:
         except Exception as e:
             _fail(str(e))
     else:
-        build = args.build or DEFAULT_BUILD
+        build = resolve_build_dir(args.build)
         if not build:
-            _fail("No build directory. Set TRUN_BUILD_DIR, pass --build DIR, or use --playlist.")
+            _fail(
+                "No build directory. Pass --build DIR, set TRUN_BUILD_DIR, "
+                "run 'trun config set build_dir DIR', or use --playlist."
+            )
         entries = _data_load_builtin(build_dir=build)
+
+    if args.only:
+        only = set(args.only)
+        entries = [e for e in entries if e.name in only]
+        if not entries:
+            _fail(f"No matching tests for --only {args.only}")
 
     if not entries:
         _fail("No tests to run.")
 
+    _execute(
+        entries,
+        repeat=args.repeat,
+        shuffle=args.shuffle,
+        executor=args.executor,
+        stop=args.stop_on_first_failure,
+        append=args.append,
+    )
+
+
+def _execute(
+    entries: list,
+    *,
+    repeat: int = 1,
+    shuffle: bool = False,
+    executor: str | None = None,
+    stop: bool = False,
+    append: bool = False,
+) -> None:
     console.print(f"[bold]Tests  :[/bold] {len(entries)}")
-    console.print(f"[bold]Repeat :[/bold] {args.repeat}")
-    console.print(f"[bold]Shuffle:[/bold] {args.shuffle}")
-    if args.executor:
-        console.print(f"[bold]Executor override:[/bold] {args.executor}")
+    console.print(f"[bold]Repeat :[/bold] {repeat}")
+    console.print(f"[bold]Shuffle:[/bold] {shuffle}")
+    if executor:
+        console.print(f"[bold]Executor override:[/bold] {executor}")
     console.print(f"[bold]Log    :[/bold] {LOG_FILE}")
     console.print()
 
@@ -102,10 +132,12 @@ def cmd_run(args: argparse.Namespace) -> None:
         result = asyncio.run(
             _data_run_tests(
                 entries,
-                repeat=args.repeat,
-                shuffle=args.shuffle,
-                executor_override=args.executor,
+                repeat=repeat,
+                shuffle=shuffle,
+                executor_override=executor,
                 on_result=on_result,
+                stop_on_first_failure=stop,
+                append=append,
             )
         )
     except KeyboardInterrupt:
@@ -129,10 +161,25 @@ def cmd_run(args: argparse.Namespace) -> None:
             "log_file": str(LOG_FILE),
         }
 
-    _print_summary(result, args.repeat > 1)
+    _print_summary(result, repeat > 1)
 
     if result["failed"]:
         raise SystemExit(1)
+
+
+def cmd_single(args: argparse.Namespace) -> None:
+    build = resolve_build_dir(args.build)
+    if not build:
+        _fail("No build directory. Pass --build DIR or set a default with 'trun config'.")
+    entry = TestEntry(
+        name=args.name,
+        subdir=args.subdir,
+        build_dir=build,
+        group="single",
+        executor=args.executor,
+        test_cases=args.test_cases or [],
+    )
+    _execute([entry])
 
 
 def _print_summary(result: dict, show_round: bool) -> None:
@@ -223,6 +270,21 @@ def cmd_playlist_add(args: argparse.Namespace) -> None:
     _ok(result["message"])
 
 
+def cmd_playlist_add_from_dir(args: argparse.Namespace) -> None:
+    result = _data_create_playlist_from_dir(
+        name=args.name,
+        build_dir=args.build,
+        subdir=args.subdir,
+        group=args.group,
+        executor=args.executor,
+        timeout_fast=args.timeout_fast,
+        timeout_long=args.timeout_long,
+    )
+    if "error" in result:
+        _fail(result["error"])
+    _ok(f"{result['message']} (discovered {result.get('discovered', 0)})")
+
+
 def cmd_playlist_remove_tests(args: argparse.Namespace) -> None:
     result = _data_remove_tests(args.name, args.group, args.tests)
     if "error" in result:
@@ -260,6 +322,11 @@ def cmd_playlist_migrate(args: argparse.Namespace) -> None:
 
 
 # ── executors ─────────────────────────────────────────────────────────────────
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    set_config(args.key, args.value)
+    _ok(f"config: {args.key} = {args.value}")
 
 
 def cmd_executors(args: argparse.Namespace) -> None:
@@ -342,13 +409,49 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["gdb", "direct", "valgrind", "pytest"],
         help="Override executor for all tests.",
     )
+    p.add_argument(
+        "--stop-on-first-failure",
+        action="store_true",
+        help="Stop after the first FAIL/CRASH/TIMEOUT.",
+    )
+    p.add_argument("--only", nargs="+", metavar="TEST", help="Run only these test names.")
+    p.add_argument(
+        "--append",
+        action="store_true",
+        help="Append to the existing log instead of clearing it.",
+    )
     p.set_defaults(func=cmd_run)
+
+    # single
+    p = sub.add_parser("single", help="Run a single test binary without a playlist.")
+    p.add_argument("name", help="Test binary name.")
+    p.add_argument("--build", required=True, metavar="DIR", help="Build directory.")
+    p.add_argument(
+        "--subdir",
+        default="fast_running",
+        choices=["fast_running", "long_running"],
+        help="Test subdirectory (default: fast_running).",
+    )
+    p.add_argument(
+        "--executor",
+        default="gdb",
+        choices=["gdb", "direct", "valgrind", "pytest"],
+        help="Executor (default: gdb).",
+    )
+    p.add_argument(
+        "--test-cases",
+        type=lambda s: s.split(","),
+        default=None,
+        metavar="FUNC1[,FUNC2,...]",
+        help="Qt test function names to run, comma-separated.",
+    )
+    p.set_defaults(func=cmd_single)
 
     # playlist
     pl = sub.add_parser("playlist", help="Manage test playlists.")
     pl_sub = pl.add_subparsers(
         dest="playlist_command",
-        metavar="<list|show|create|add|remove-tests|delete|migrate>",
+        metavar="<list|show|create|add|add-from-dir|remove-tests|delete|migrate>",
     )
     pl_sub.required = True
 
@@ -404,6 +507,29 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("tests", nargs="+", help="Test names to add.")
     p.set_defaults(func=cmd_playlist_add)
 
+    p = pl_sub.add_parser(
+        "add-from-dir",
+        help="Discover tests from a CTestTestfile.cmake subdir and add them.",
+    )
+    p.add_argument("name", help="Playlist name (created if missing).")
+    p.add_argument("--group", required=True, help="Group name.")
+    p.add_argument("--build", required=True, metavar="DIR", help="Build directory.")
+    p.add_argument(
+        "--subdir",
+        required=True,
+        choices=["fast_running", "long_running"],
+        help="Test subdirectory to scan.",
+    )
+    p.add_argument(
+        "--executor",
+        default="gdb",
+        choices=["gdb", "direct", "valgrind", "pytest"],
+        help="Executor for this group (default: gdb).",
+    )
+    p.add_argument("--timeout-fast", type=int, default=None, metavar="SECS")
+    p.add_argument("--timeout-long", type=int, default=None, metavar="SECS")
+    p.set_defaults(func=cmd_playlist_add_from_dir)
+
     p = pl_sub.add_parser("remove-tests", help="Remove tests from a playlist group.")
     p.add_argument("name", help="Playlist name.")
     p.add_argument("--group", required=True, help="Section/group name.")
@@ -427,6 +553,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # executors
     p = sub.add_parser("executors", help="List available execution modes.")
     p.set_defaults(func=cmd_executors)
+
+    # config
+    p = sub.add_parser("config", help="Set persistent config (e.g. default build_dir).")
+    cfg_sub = p.add_subparsers(dest="config_command", metavar="<set>")
+    cfg_sub.required = True
+    pc = cfg_sub.add_parser("set", help="Set a config key (e.g. build_dir).")
+    pc.add_argument("key", help="Config key, e.g. build_dir.")
+    pc.add_argument("value", help="Config value.")
+    pc.set_defaults(func=cmd_config)
 
     # mcp
     p = sub.add_parser("mcp", help="Start the MCP stdio server.")

@@ -9,7 +9,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR
+from .config import DEFAULT_BUILD, LOG_FILE, PLAYLISTS_DIR, resolve_build_dir
 from .executor import list_executors
 from .history import _append_run_history, _get_run_history
 from .log_analysis import aggregate_failures, filter_log_lines, parse_log
@@ -34,6 +34,16 @@ from .runner import _data_build, _data_get_test_cases, _data_run_tests
 
 server = Server("trun")
 
+# ponytail: one global lock serializes test runs so overlapping calls don't interleave
+# writes into the same last_run.log. Residual: history append + analyze read sit just outside
+# it — atomic_write prevents torn files; tighten to cover analyze if true concurrency matters.
+_RUN_LOCK = asyncio.Lock()
+
+
+async def _locked_run(*args, **kwargs) -> dict:
+    async with _RUN_LOCK:
+        return await _data_run_tests(*args, **kwargs)
+
 
 def _load_entries(arguments: dict) -> list | dict:
     playlist = arguments.get("playlist")
@@ -54,7 +64,7 @@ def _load_entries(arguments: dict) -> list | dict:
             path = named
         entries = _data_load_playlist_file(str(path))
     else:
-        build = arguments.get("build_dir") or DEFAULT_BUILD
+        build = resolve_build_dir(arguments.get("build_dir"))
         if not build:
             return {
                 "error": (
@@ -698,7 +708,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 on_result = (
                     _make_progress_cb(ctx.session, token, len(entries) * repeat) if token else None
                 )
-                result: dict = await _data_run_tests(
+                result: dict = await _locked_run(
                     entries,
                     repeat=repeat,
                     shuffle=arguments.get("shuffle", False),
@@ -729,7 +739,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 on_result = (
                     _make_progress_cb(ctx.session, token, len(entries) * repeat) if token else None
                 )
-                run_result = await _data_run_tests(
+                run_result = await _locked_run(
                     entries,
                     repeat=repeat,
                     shuffle=arguments.get("shuffle", False),
@@ -843,7 +853,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ctx = server.request_context
                 token = ctx.meta.progressToken if ctx.meta else None
                 on_result = _make_progress_cb(ctx.session, token, 1) if token else None
-                result = await _data_run_tests([entry], on_result=on_result)
+                result = await _locked_run([entry], on_result=on_result)
                 await asyncio.to_thread(_append_run_history, None, result)
             case "get_test_cases":
                 result = await _data_get_test_cases(

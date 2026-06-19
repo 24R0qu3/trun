@@ -156,6 +156,10 @@ def get_error_hint(section_lines: list[str], status: str) -> str | None:
         return qt_fail
     if assertion:
         return f"assertion failed: {assertion}"
+    for line in section_lines:
+        m = _VALGRIND_RE.search(line)
+        if m and int(m.group(1)) > 0:
+            return f"valgrind: {m.group(1)} errors"
     return None
 
 

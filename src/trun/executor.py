@@ -66,7 +66,10 @@ class PytestExecutor(Executor):
         )
 
     def build_command(self, binary: str, test_cases: list[str] | None = None) -> list[str]:
-        return ["pytest", binary, "-v"]
+        cmd = ["pytest", binary, "-v"]
+        if test_cases:
+            cmd += ["-k", " or ".join(test_cases)]
+        return cmd
 
 
 _EXECUTORS: dict[str, Executor] = {

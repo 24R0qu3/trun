@@ -53,6 +53,11 @@ trun run --playlist smoke --repeat 3 --shuffle
 ```
 trun run [--playlist NAME_OR_PATH] [--build DIR] [--repeat N] [--shuffle]
          [--executor gdb|direct|valgrind|pytest]
+         [--stop-on-first-failure] [--only TEST ...] [--append]
+
+trun single <name> --build DIR [--subdir fast_running|long_running]
+                   [--executor gdb|direct|valgrind|pytest]
+                   [--test-cases FUNC1[,FUNC2,...]]
 
 trun playlist list
 trun playlist show     <name>
@@ -62,14 +67,20 @@ trun playlist add      <name> --group G --build DIR --type fast_running|long_run
                               [--timeout-fast SECS] [--timeout-long SECS]
                               [--test-cases FUNC1[,FUNC2,...]]
                               <test1> [test2 ...]
+trun playlist add-from-dir <name> --group G --build DIR --subdir fast_running|long_running
+                              [--executor ...] [--timeout-fast SECS] [--timeout-long SECS]
 trun playlist remove-tests <name> --group G <test1> [test2 ...]
 trun playlist delete   <name>
 trun playlist migrate  [<name>]
 
+trun config set build_dir DIR    # persistent default build dir for the built-in suite
 trun executors
 trun mcp [--print-config]
 trun patch-claude [--remove]
 ```
+
+The built-in suite resolves its build directory as `--build` > `$TRUN_BUILD_DIR` >
+`trun config set build_dir`. `trun run` and `trun single` exit non-zero when any test fails.
 
 ## Playlist format
 
@@ -139,7 +150,7 @@ trun playlist migrate <name>   # migrate a single playlist
 | `gdb` | `gdb --return-child-result -batch -ex run -ex bt -ex quit <bin>` | 60 s | 180 s |
 | `direct` | `<bin>` | 60 s | 180 s |
 | `valgrind` | `valgrind --leak-check=full --error-exitcode=1 <bin>` | 120 s | 360 s |
-| `pytest` | `pytest <path> -v` | 60 s | 180 s |
+| `pytest` | `pytest <path> -v` (adds `-k "a or b"` when `test_cases` set) | 60 s | 180 s |
 
 GDB output is filtered (thread attach/detach noise removed) and capped at 300 lines per test before being written to the log.
 
