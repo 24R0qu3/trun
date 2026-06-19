@@ -45,9 +45,10 @@ def _truncate_output(
     if len(lines) <= max_lines:
         return text
     dropped = len(lines) - max_lines
-    tail = min(tail_lines, max_lines)
+    tail = max(0, min(tail_lines, max_lines))
     head = max_lines - tail
-    kept = lines[:head] + [f"... [{dropped} lines truncated] ..."] + lines[-tail:]
+    marker = [f"... [{dropped} lines truncated] ..."]
+    kept = lines[:head] + marker + (lines[-tail:] if tail else [])
     return "\n".join(kept)
 
 
