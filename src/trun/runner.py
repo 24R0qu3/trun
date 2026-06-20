@@ -206,6 +206,10 @@ async def _data_build(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=cwd,
+            # ponytail: 1 MiB readline buffer so an overlong build line can't trip asyncio's
+            # default 64 KiB limit (would raise mid-stream and drop the result). Bump if a real
+            # build ever emits a single line larger than this.
+            limit=1024 * 1024,
         )
     except Exception as e:
         elapsed = int(time.monotonic() - t_start)

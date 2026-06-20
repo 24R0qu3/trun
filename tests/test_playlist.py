@@ -6,7 +6,6 @@ from trun.playlist import (
     _data_list_available_tests,
     _data_set_pipeline,
     _parse_ctest_subdirs,
-    _resolve_playlist_path,
 )
 
 
@@ -101,7 +100,9 @@ class TestSetPipeline:
             "mypl",
             [{"name": "fast", "build": "/build", "executor": "gdb", "tests": []}],
         )
-        _data_set_pipeline("mypl", "fast", "cmake --build .", configure_cmd="cmake -S /src -B /build")
+        _data_set_pipeline(
+            "mypl", "fast", "cmake --build .", configure_cmd="cmake -S /src -B /build"
+        )
         data = yaml.safe_load((playlist_dir / "mypl.yaml").read_text())
         grp = next(g for g in data["groups"] if g["name"] == "fast")
         assert grp["configure_cmd"] == "cmake -S /src -B /build"
